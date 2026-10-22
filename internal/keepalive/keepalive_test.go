@@ -155,10 +155,10 @@ func TestParseRequestBuildsReplay(t *testing.T) {
 	if req.AuthID != "claude-a.json" || req.Session != "sess" || req.Model != "claude-opus-5-5" {
 		t.Fatalf("request %+v", req)
 	}
-	if got := gjson.GetBytes(req.Body, "max_tokens").Int(); got != 0 {
+	if got := gjson.GetBytes(req.Body, "max_tokens").Int(); got != 1 {
 		t.Fatalf("max_tokens %d", got)
 	}
-	want := strings.Replace(string(body("main", "1")), `"max_tokens":32000`, `"max_tokens":0`, 1)
+	want := strings.Replace(string(body("main", "1")), `"max_tokens":32000`, `"max_tokens":1`, 1)
 	if string(req.Body) != want {
 		t.Fatalf("body changed beyond max_tokens:\n%s", req.Body)
 	}
@@ -221,7 +221,7 @@ func TestPingsUntilMaxPings(t *testing.T) {
 		t.Fatalf("pings %d after 260s", h.pings())
 	}
 	sent := h.requests[0]
-	if sent.AuthID != "claude-a.json" || !sent.Stream || gjson.GetBytes(sent.Body, "max_tokens").Int() != 0 {
+	if sent.AuthID != "claude-a.json" || !sent.Stream || gjson.GetBytes(sent.Body, "max_tokens").Int() != 1 {
 		t.Fatalf("ping request %+v", sent)
 	}
 	if len(h.closed) == 0 {

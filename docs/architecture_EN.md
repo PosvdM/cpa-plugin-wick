@@ -39,10 +39,11 @@ Notes:
 
 To hit the cache written by the original request, what goes upstream must match the original request:
 
-- The body is the raw client body with only `max_tokens` set to 0 by `sjson`. `sjson` edits in place, so the other bytes and the key order stay the same. CPA leaves `max_tokens` out of the CCH signature, so the billing block at the start of the system prompt does not change.
+- The body is the raw client body with only `max_tokens` set to 1 by `sjson`. `sjson` edits in place, so the other bytes and the key order stay the same. CPA leaves `max_tokens` out of the CCH signature, so the billing block at the start of the system prompt does not change.
 - The headers are the recorded inbound headers without `Content-Length`. CPA treats a request as native Claude Code when it has `X-App: cli`, a User-Agent starting with `claude-cli/`, `claude-code-20250219` in `anthropic-beta`, and `metadata.user_id` in the body; it then leaves `cache_control` alone.
-- The request is streamed. A non-streaming request would change `stream` in the body and with it the CCH signature.
-- With `max_tokens: 0` the upstream returns `stop_reason: max_tokens` and generates nothing. In budget mode (`thinking.type` is `enabled`), CPA's thinking handling replaces `max_tokens <= 0` with the model default (`internal/thinking/provider/claude/apply.go`) and the refresh would generate output, so such requests are not refreshed. Adaptive mode does not reach that code.
+- The request is streamed. A non-streaming request would change `stream` in the body and with it the CCH signature. Anthropic rejects `max_tokens: 0` on streaming requests (400, `stream cannot be true when max_tokens is 0`), hence 1.
+- With `max_tokens: 1` the upstream returns only `message_start`, `message_delta` (`stop_reason: max_tokens`, `output_tokens: 1`) and `message_stop`, with no content block; the same holds with adaptive thinking (tested on Opus 5.5 and Haiku 5.5 on 2026-10-23).
+- Budget mode (`thinking.type` is `enabled`) requires `max_tokens` to exceed `budget_tokens`, so CPA's `normalizeClaudeBudget` (`internal/thinking/provider/claude/apply.go`) would rewrite `budget_tokens` and the refresh would no longer match the original request. Such requests are not refreshed.
 
 After `message_start`, the plugin records its `usage`. A `cache_creation_input_tokens` above 0 means the refresh wrote to the cache: the cache had expired, or the refresh differs from the original request. Refreshing then stops so that writes are not paid for again and again.
 

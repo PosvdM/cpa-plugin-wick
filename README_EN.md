@@ -12,11 +12,11 @@ Wick keeps normal writes at the 5-minute price and, while a conversation is idle
 
 ## How it works
 
-- Wick records the last request of each conversation. Counting from the start of that request, it picks a random moment between `interval_min` and `interval_max` seconds and sends the same request again with only `max_tokens` set to 0. This request only reads the cache and generates nothing. Its result never reaches Claude Code, so the conversation context stays the same.
+- Wick records the last request of each conversation. Counting from the start of that request, it picks a random moment between `interval_min` and `interval_max` seconds and sends the same request again with only `max_tokens` set to 1. This request reads the cache and generates a single token. Its result never reaches Claude Code, so the conversation context stays the same. Anthropic rejects `max_tokens` 0 on streaming requests, and the refresh must stream like the original request, hence 1.
 - The refresh goes through CPA's model executor with the original account and request headers, so it hits the same cache as the original request.
 - A new request in the conversation restarts the timer from that request and resets the refresh count.
 - Refreshing stops when it reaches `max_pings`, when a refresh fails, when a refresh writes to the cache (the cache had expired or the request differs, so further refreshes cannot hit it), when the original request fails, or when the plugin is disabled. Requests interrupted with Esc keep being refreshed.
-- Only native Claude Code streaming requests are handled. These requests are not refreshed: requests that use the 1-hour cache; requests with budget-mode thinking (`budget_tokens`), because CPA replaces their `max_tokens: 0` with the default; and requests with a body smaller than `min_body_kb`, such as title generation.
+- Only native Claude Code streaming requests are handled. These requests are not refreshed: requests that use the 1-hour cache; requests with budget-mode thinking (`budget_tokens`), because their `max_tokens` must exceed `budget_tokens`; and requests with a body smaller than `min_body_kb`, such as title generation.
 - Within one session, the main conversation and each subagent are refreshed separately. When the main conversation sends its next request, subagents that started while it was waiting are treated as finished and no longer refreshed.
 
 Refresh reads count against the subscription quota. Each refresh reads the whole context at 0.1×; if you come back within one or two refresh intervals, the savings are small.
@@ -68,7 +68,7 @@ curl -H "Authorization: Bearer <management key>" http://127.0.0.1:8317/v0/manage
 ## Security and risks
 
 - Conversation content is kept only in memory, never written to disk or logs, and is cleared when CPA restarts or the plugin is unloaded.
-- A refresh is identical to the original request except for `max_tokens: 0`, and the intervals are random, but regularly sending requests that produce no output may still be noticed by the provider. Using a subscription account through CPA carries account risk in itself; judge for yourself.
+- A refresh is identical to the original request except for `max_tokens: 1`, and the intervals are random, but regularly sending requests that output a single token may still be noticed by the provider. Using a subscription account through CPA carries account risk in itself; judge for yourself.
 - When a refresh fails (for example, it is rate limited), CPA puts the account into cooldown as it does for any request, and your next request is rejected until the cooldown ends.
 
 ## Development

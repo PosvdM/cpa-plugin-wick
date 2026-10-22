@@ -1,8 +1,8 @@
 // Package keepalive keeps the 5-minute prompt cache of idle Claude Code
 // conversations alive. It remembers the last request of each conversation
-// and, while the conversation is idle, replays it with max_tokens set to 0
-// before the cache entry expires. A replay only reads the cache, which resets
-// the entry's TTL.
+// and, while the conversation is idle, replays it with max_tokens set to 1
+// before the cache entry expires. A replay reads the cache, which resets the
+// entry's TTL, and generates a single token.
 package keepalive
 
 import (

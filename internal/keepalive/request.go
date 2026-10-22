@@ -25,6 +25,11 @@ const (
 	skipBadBody   = "bad_body"
 )
 
+// replayMaxTokens is the max_tokens of a replay. Anthropic rejects
+// max_tokens 0 on streaming requests, and the replay must stream like the
+// original, so it generates one token.
+const replayMaxTokens = 1
+
 const (
 	sessionHeader = "X-Claude-Code-Session-Id"
 	// Claude Code sends this header on subagent requests only.
@@ -51,7 +56,7 @@ type request struct {
 	AuthID    string
 	RequestID string
 	Headers   http.Header
-	// Body is the client body with max_tokens set to 0.
+	// Body is the client body with max_tokens set to replayMaxTokens.
 	Body []byte
 }
 
@@ -97,9 +102,9 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 	if ttl1hPattern.Match(req.Body) {
 		return out, skipTTL1h
 	}
-	// In budget thinking mode CPA replaces max_tokens <= 0 with the model
-	// default, so the replay would generate output. Adaptive thinking is not
-	// affected.
+	// Budget thinking requires max_tokens > budget_tokens, which a one-token
+	// replay cannot satisfy without changing the thinking parameters.
+	// Adaptive thinking has no such constraint.
 	if gjson.GetBytes(req.Body, "thinking.type").String() == "enabled" {
 		return request{}, skipBudget
 	}
@@ -109,7 +114,7 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 	}
 	// sjson edits the bytes in place and keeps the key order, so the rest of
 	// the body stays byte for byte the same as the request that wrote the cache.
-	body, err := sjson.SetBytes(req.Body, "max_tokens", 0)
+	body, err := sjson.SetBytes(req.Body, "max_tokens", replayMaxTokens)
 	if err != nil {
 		return request{}, skipBadBody
 	}

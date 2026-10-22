@@ -39,10 +39,11 @@
 
 续期请求要命中原请求写入的缓存，发往上游的内容必须与原请求一致：
 
-- 请求体是客户端原始请求体，只用 `sjson` 把 `max_tokens` 改成 0。`sjson` 原位修改，其余字节和键的顺序不变。CPA 计算 CCH 签名时不包含 `max_tokens`，系统提示开头的计费块因此不变。
+- 请求体是客户端原始请求体，只用 `sjson` 把 `max_tokens` 改成 1。`sjson` 原位修改，其余字节和键的顺序不变。CPA 计算 CCH 签名时不包含 `max_tokens`，系统提示开头的计费块因此不变。
 - 请求头是记录下来的入站请求头，去掉 `Content-Length`。CPA 依据 `X-App: cli`、`claude-cli/` 开头的 User-Agent、`anthropic-beta` 中的 `claude-code-20250219` 和请求体中的 `metadata.user_id` 判断原生 Claude Code，满足时不改写 `cache_control`。
-- 请求以流式发送。改成非流式会改变请求体中的 `stream`，进而改变 CCH 签名。
-- `max_tokens: 0` 时上游返回 `stop_reason: max_tokens`，不生成内容。CPA 的 thinking 处理在 budget 模式（`thinking.type` 为 `enabled`）下把 `max_tokens <= 0` 替换为模型默认值（`internal/thinking/provider/claude/apply.go`），续期请求会真正生成内容，因此这类请求不续期。adaptive 模式不经过这段代码。
+- 请求以流式发送。改成非流式会改变请求体中的 `stream`，进而改变 CCH 签名。Anthropic 对流式请求拒绝 `max_tokens: 0`（400，`stream cannot be true when max_tokens is 0`），因此用 1。
+- `max_tokens: 1` 时上游只返回 `message_start`、`message_delta`（`stop_reason: max_tokens`，`output_tokens: 1`）和 `message_stop`，没有内容块；adaptive thinking 下相同（2026-10-23 在 Opus 5.5 和 Haiku 5.5 上实测）。
+- budget 模式（`thinking.type` 为 `enabled`）要求 `max_tokens` 大于 `budget_tokens`，CPA 的 `normalizeClaudeBudget`（`internal/thinking/provider/claude/apply.go`）会因此改写 `budget_tokens`，续期请求与原请求不再一致，所以这类请求不续期。
 
 读到 `message_start` 后，插件记录其中的 `usage`。`cache_creation_input_tokens` 大于 0 说明这次请求写入了缓存：缓存已经过期，或续期请求与原请求不一致。此时停止续期，避免反复支付写入费用。
 
