@@ -44,7 +44,9 @@ func StatusOf(err error) int {
 
 // Host is the set of host callbacks Wick uses.
 type Host interface {
-	ModelExecute(req pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error)
+	ModelExecuteStream(req pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error)
+	ModelStreamRead(streamID string) (pluginapi.HostModelStreamReadResponse, error)
+	ModelStreamClose(streamID string)
 	Log(level, message string, fields map[string]any)
 }
 
@@ -100,13 +102,30 @@ func (r RPC) call(method string, payload any, out any) error {
 	return nil
 }
 
-// ModelExecute runs one non-streaming request through CPA's model executor
-// and returns the whole response.
-func (r RPC) ModelExecute(req pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
-	req.Stream = false
-	var resp pluginapi.HostModelExecutionResponse
-	err := r.call(pluginabi.MethodHostModelExecute, req, &resp)
+// ModelExecuteStream starts one streaming request through CPA's model
+// executor. It returns once the first chunk or an error arrives. The caller
+// must close the stream with ModelStreamClose.
+//
+// The request carries no host_callback_id: with one, CPA would close the
+// stream as soon as the callback scope that started it ends.
+func (r RPC) ModelExecuteStream(req pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
+	req.Stream = true
+	var resp pluginapi.HostModelStreamResponse
+	err := r.call(pluginabi.MethodHostModelExecuteStream, req, &resp)
 	return resp, err
+}
+
+// ModelStreamRead returns the next chunk of a stream. It blocks until a chunk
+// arrives, the stream ends or the stream is closed.
+func (r RPC) ModelStreamRead(streamID string) (pluginapi.HostModelStreamReadResponse, error) {
+	var resp pluginapi.HostModelStreamReadResponse
+	err := r.call(pluginabi.MethodHostModelStreamRead, pluginapi.HostModelStreamReadRequest{StreamID: streamID}, &resp)
+	return resp, err
+}
+
+// ModelStreamClose cancels a stream. A pending ModelStreamRead returns.
+func (r RPC) ModelStreamClose(streamID string) {
+	_ = r.call(pluginabi.MethodHostModelStreamClose, pluginapi.HostModelStreamCloseRequest{StreamID: streamID}, nil)
 }
 
 // Log writes one entry to the CPA log.

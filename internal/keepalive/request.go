@@ -1,6 +1,7 @@
 package keepalive
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // Skip reasons returned by parseRequest.
@@ -21,7 +21,6 @@ const (
 	skipNoSession = "no_session"
 	skipNoAuth    = "no_auth"
 	skipTTL1h     = "ttl_1h"
-	skipBudget    = "budget_thinking"
 	skipBadBody   = "bad_body"
 )
 
@@ -51,7 +50,8 @@ type request struct {
 	AuthID    string
 	RequestID string
 	Headers   http.Header
-	// Body is the client body with max_tokens set to 0 and stream to false.
+	// Body is a copy of the client body. The replay sends it unchanged, so
+	// upstream sees the same request as one canceled right after sending.
 	Body []byte
 }
 
@@ -97,30 +97,11 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 	if ttl1hPattern.Match(req.Body) {
 		return out, skipTTL1h
 	}
-	// In budget thinking mode CPA may replace max_tokens <= 0 with the model
-	// default, so the replay could generate output. Adaptive thinking is not
-	// affected.
-	if gjson.GetBytes(req.Body, "thinking.type").String() == "enabled" {
-		return request{}, skipBudget
-	}
 	authID, _ := req.Metadata["selected_auth_id"].(string)
 	if out.AuthID = strings.TrimSpace(authID); out.AuthID == "" {
 		return request{}, skipNoAuth
 	}
-	// Anthropic accepts max_tokens 0 only without streaming; CPA would also
-	// set stream to false for a non-streaming execution. sjson edits the bytes
-	// in place and keeps the key order, so the rest of the body stays byte for
-	// byte the same as the request that wrote the cache. CPA signs the CCH of
-	// the final body for OAuth accounts, so the changed fields keep a valid
-	// signature.
-	body, err := sjson.SetBytes(req.Body, "max_tokens", 0)
-	if err == nil {
-		body, err = sjson.SetBytes(body, "stream", false)
-	}
-	if err != nil {
-		return request{}, skipBadBody
-	}
-	out.Body = body
+	out.Body = bytes.Clone(req.Body)
 	out.Headers = req.Headers.Clone()
 	out.Headers.Del("Content-Length")
 	return out, ""

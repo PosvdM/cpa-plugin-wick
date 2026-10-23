@@ -12,11 +12,11 @@ Wick keeps normal writes at the 5-minute price and, while a conversation is idle
 
 ## How it works
 
-- Wick records the last request of each conversation. Counting from the start of that request, it picks a random moment between `interval_min` and `interval_max` seconds and sends the request again, non-streaming and with only `max_tokens` set to 0. This request only reads the cache and generates nothing. Its result never reaches Claude Code, so the conversation context stays the same. Anthropic accepts `max_tokens: 0` only on non-streaming requests.
+- Wick records the last request of each conversation. Counting from the start of that request, it picks a random moment between `interval_min` and `interval_max` seconds and sends the same request again unchanged, disconnecting as soon as the first event, `message_start`, arrives, as if Esc were pressed right after sending. By `message_start` the cache has been read and its lifetime restarted. The upstream may generate a few tokens before the disconnect. The result never reaches Claude Code, so the conversation context stays the same.
 - The refresh goes through CPA's model executor with the original account and request headers, so it hits the same cache as the original request.
 - A new request in the conversation restarts the timer from that request and resets the refresh count.
 - Refreshing stops when it reaches `max_pings`, when a refresh fails, when a refresh writes to the cache (the cache had expired or the request differs, so further refreshes cannot hit it), when the original request fails, or when the plugin is disabled. Requests interrupted with Esc keep being refreshed.
-- Only native Claude Code streaming requests are handled. These requests are not refreshed: requests that use the 1-hour cache; requests with budget-mode thinking (`budget_tokens`), because CPA may replace their `max_tokens: 0` with the default; and requests with a body smaller than `min_body_kb`, such as title generation.
+- Only native Claude Code streaming requests are handled. These requests are not refreshed: requests that use the 1-hour cache; and requests with a body smaller than `min_body_kb`, such as title generation.
 - Within one session, the main conversation and each subagent are refreshed separately. When the main conversation sends its next request, subagents that started while it was waiting are treated as finished and no longer refreshed.
 
 Refresh reads count against the subscription quota. Each refresh reads the whole context at 0.1×; if you come back within one or two refresh intervals, the savings are small.
@@ -57,11 +57,13 @@ The cache lifetime counts from when Anthropic receives the request, network late
 
 ## Status
 
-Each refresh writes one line to the CPA log with the first 8 characters of the session ID, the model, the refresh number, the cache tokens read and written, and the output tokens, for example:
+Each refresh writes one line to the CPA log with the first 8 characters of the session ID, the model, the refresh number, and the cache tokens read and written, for example:
 
 ```text
-wick: ping session=1a2b3c4d key=5e6f7a8b ping=3 cache_read=322200 cache_creation=0 input=3 output=0 model=claude-opus-5-5
+wick: ping session=1a2b3c4d key=5e6f7a8b ping=3 cache_read=322200 cache_creation=0 input=3 output=1 model=claude-opus-5-5
 ```
+
+`output` is the count in `message_start` and leaves out tokens generated before the disconnect.
 
 `GET /v0/management/wick/status` returns the conversations being refreshed, the next refresh times, the results of the last 100 refreshes and running totals. It requires the CPA management key:
 
@@ -72,7 +74,7 @@ curl -H "Authorization: Bearer <management key>" http://127.0.0.1:8317/v0/manage
 ## Security and risks
 
 - Conversation content is kept only in memory, never written to disk or logs, and is cleared when CPA restarts or the plugin is unloaded.
-- A refresh differs from the original request only in `max_tokens: 0` and not streaming, and the intervals are random, but regularly resending the same request without generating anything may still be noticed by the provider. Using a subscription account through CPA carries account risk in itself; judge for yourself.
+- A refresh is identical to the original request and the intervals are random, but regularly resending the same request and cancelling it may still be noticed by the provider. Using a subscription account through CPA carries account risk in itself; judge for yourself.
 - When a refresh fails (for example, it is rate limited), CPA puts the account into cooldown as it does for any request, and your next request is rejected until the cooldown ends.
 
 ## Development

@@ -1,11 +1,13 @@
 // Package keepalive keeps the 5-minute prompt cache of idle Claude Code
 // conversations alive. It remembers the last request of each conversation
-// and, while the conversation is idle, replays it without streaming and with
-// max_tokens set to 0 before the cache entry expires. A replay only reads the
-// cache, which resets the entry's TTL, and generates nothing.
+// and, while the conversation is idle, replays it unchanged before the cache
+// entry expires and closes the stream at message_start, like a request
+// canceled right after sending. By then the replay has read the cache, which
+// resets the entry's TTL.
 package keepalive
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -22,6 +24,8 @@ import (
 const (
 	// maxConversations bounds memory: each entry holds a full request body.
 	maxConversations = 32
+	// pingTimeout closes a ping stream that has not delivered message_start.
+	pingTimeout = 60 * time.Second
 	// maxEvents is the number of recent ping results kept for the status API.
 	maxEvents = 100
 )
@@ -76,6 +80,7 @@ type Manager struct {
 	cfg     config.Config
 	stopped bool
 	convs   map[string]*conversation
+	streams map[string]struct{}
 	// gen numbers schedules across all conversations, so that a ping still
 	// in flight for a removed conversation cannot match a new one.
 	gen    uint64
@@ -123,6 +128,7 @@ func New(opts Options) *Manager {
 		enabled: opts.Enabled,
 		cfg:     config.Default(),
 		convs:   make(map[string]*conversation),
+		streams: make(map[string]struct{}),
 	}
 	if m.clock == nil {
 		m.clock = realClock{}
@@ -150,14 +156,21 @@ func (m *Manager) Configure(cfg config.Config) {
 	}
 }
 
-// Stop cancels every schedule and forgets every conversation. A ping in
-// flight finishes, but its result is not used.
+// Stop cancels every schedule, forgets every conversation and closes the
+// streams of pings in flight.
 func (m *Manager) Stop() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.stopped = true
 	for key := range m.convs {
 		m.removeLocked(key)
+	}
+	streams := make([]string, 0, len(m.streams))
+	for id := range m.streams {
+		streams = append(streams, id)
+	}
+	m.mu.Unlock()
+	for _, id := range streams {
+		m.host.ModelStreamClose(id)
 	}
 }
 
@@ -353,12 +366,13 @@ func (m *Manager) beginPing(key string, gen uint64, enabled bool) (request, int,
 	return c.req, c.pings, true
 }
 
-// ping replays req and returns its usage.
+// ping replays req and reads the stream until message_start.
 func (m *Manager) ping(req request) (*Usage, error) {
-	resp, err := m.host.ModelExecute(pluginapi.HostModelExecutionRequest{
+	resp, err := m.host.ModelExecuteStream(pluginapi.HostModelExecutionRequest{
 		EntryProtocol: "claude",
 		ExitProtocol:  "claude",
 		Model:         req.Model,
+		Stream:        true,
 		Body:          req.Body,
 		Headers:       req.Headers,
 		AuthID:        req.AuthID,
@@ -366,14 +380,45 @@ func (m *Manager) ping(req request) (*Usage, error) {
 	if err != nil {
 		return nil, err
 	}
-	usage, err := parseUsage(resp.Body)
-	if err == nil && resp.StatusCode >= http.StatusMultipleChoices {
-		err = fmt.Errorf("upstream status %d", resp.StatusCode)
+	if resp.StreamID == "" {
+		return nil, errors.New("host returned no stream")
 	}
-	if err != nil {
-		return nil, err
+	id := resp.StreamID
+	m.mu.Lock()
+	m.streams[id] = struct{}{}
+	m.mu.Unlock()
+	watchdog := m.clock.AfterFunc(pingTimeout, func() {
+		defer func() { _ = recover() }()
+		m.host.ModelStreamClose(id)
+	})
+	defer func() {
+		watchdog.Stop()
+		m.host.ModelStreamClose(id)
+		m.mu.Lock()
+		delete(m.streams, id)
+		m.mu.Unlock()
+	}()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("upstream status %d", resp.StatusCode)
 	}
-	return usage, nil
+
+	var scanner sseScanner
+	for {
+		chunk, err := m.host.ModelStreamRead(id)
+		if err != nil {
+			return nil, err
+		}
+		usage, err := scanner.feed(chunk.Payload)
+		if usage != nil || err != nil {
+			return usage, err
+		}
+		if chunk.Error != "" {
+			return nil, errors.New(chunk.Error)
+		}
+		if chunk.Done {
+			return nil, errors.New("stream ended before message_start")
+		}
+	}
 }
 
 func (m *Manager) logLocked(level, message string, req request, ping int, stopped string, usage ...*Usage) {
