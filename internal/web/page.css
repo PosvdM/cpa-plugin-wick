@@ -132,6 +132,8 @@ header .meta { color: var(--text-tertiary); font-size: 12.5px; font-family: var(
   margin-bottom: 16px;
 }
 .card-title { font-size: 15px; font-weight: 650; margin: 0 0 14px; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 14px; }
+.card-head .card-title { margin: 0; }
 .card-title .count { margin-left: 8px; color: var(--text-tertiary); font-weight: 500; font-family: var(--font-mono); font-size: 13px; }
 .card-title .count:empty { display: none; }
 
@@ -202,6 +204,22 @@ td.num { text-align: right; font-family: var(--font-mono); font-variant-numeric:
 td.actions { text-align: right; }
 td.result { white-space: normal; min-width: 180px; }
 .cell-note { margin-top: 2px; font-size: 11.5px; color: var(--text-tertiary); }
+/* Conversation cells: the project directory over the first prompt. */
+.truncate { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.conv-title { display: flex; align-items: center; gap: 6px; font-weight: 600; max-width: 320px; }
+.conv-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.conv-prompt { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.tag {
+  flex: none; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 4px;
+  background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-color);
+}
+td.duration .cell-note { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+select {
+  font: inherit; font-size: 12.5px; padding: 4px 8px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary);
+}
+select:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 25%, transparent); }
+.duration-input { width: 88px; padding: 4px 8px; font-family: var(--font-mono); text-align: right; }
 .result-note { margin-left: 8px; font-size: 12px; color: var(--text-secondary); }
 .totals { margin: -6px 0 12px; font-size: 13px; color: var(--text-secondary); }
 .events-more { margin-top: 8px; }
@@ -223,9 +241,12 @@ form label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px;
 form label.inline-input { flex-direction: row; align-items: center; gap: 6px; font-weight: 500; color: var(--text-primary); }
 form label[hidden] { display: none; }
 .inline-input input { width: 72px; text-align: right; font-family: var(--font-mono); }
-.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 18px; margin-bottom: 10px; max-width: 720px; }
-.grid-3 input { font-family: var(--font-mono); }
-.advanced { margin-top: 16px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 18px; margin-bottom: 10px; max-width: 900px; }
+.grid-4 input { font-family: var(--font-mono); }
+/* The advanced settings apply to every duration, so they sit below a rule,
+   apart from the duration choice. */
+.advanced { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-color); }
+.summary-note { font-weight: 400; color: var(--text-tertiary); font-size: 12px; }
 .advanced > summary {
   display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none;
   font-size: 12.5px; font-weight: 600; color: var(--text-secondary); border-radius: 6px; width: max-content;
@@ -254,5 +275,5 @@ form label[hidden] { display: none; }
 
 @media (max-width: 640px) {
   main { padding: 14px 12px 32px; }
-  .grid-3 { grid-template-columns: 1fr; }
+  .grid-4 { grid-template-columns: 1fr 1fr; }
 }

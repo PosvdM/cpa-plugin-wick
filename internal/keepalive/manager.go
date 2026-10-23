@@ -26,13 +26,18 @@ const (
 	maxConversations = 32
 	// pingTimeout closes a ping stream that has not delivered message_start.
 	pingTimeout = 60 * time.Second
-	// maxEvents is the number of recent ping results kept for the status API.
-	maxEvents = 100
+	// cacheTTL is how long a prompt cache entry lives after it was last read.
+	cacheTTL = 300 * time.Second
+	// MaxDurationHours bounds the duration set for one conversation.
+	MaxDurationHours = 24
+	// maxEventPromptRunes bounds the first prompt stored with each ping.
+	maxEventPromptRunes = 80
 )
 
 // Stop reasons, also reported in the status API.
 const (
 	stopMaxPings   = "max_pings"
+	stopUntil      = "until"
 	stopError      = "error"
 	stopCacheMiss  = "cache_miss"
 	stopDisabled   = "disabled"
@@ -41,6 +46,7 @@ const (
 	stopEvicted    = "evicted"
 	stopTTL1h      = "ttl_1h"
 	stopManual     = "manual"
+	stopExpired    = "expired"
 )
 
 // Clock abstracts time so that tests can drive the scheduler.
@@ -68,14 +74,22 @@ type Options struct {
 	Rand func() float64
 	// Enabled reports whether the plugin is enabled in the CPA config.
 	Enabled func() bool
+	// Recorder stores the result of each ping. It may be nil.
+	Recorder Recorder
+}
+
+// Recorder stores the result of each ping.
+type Recorder interface {
+	Append(Event) error
 }
 
 // Manager tracks conversations and sends the pings.
 type Manager struct {
-	host    host.Host
-	clock   Clock
-	rand    func() float64
-	enabled func() bool
+	host     host.Host
+	clock    Clock
+	rand     func() float64
+	enabled  func() bool
+	recorder Recorder
 
 	mu      sync.Mutex
 	cfg     config.Config
@@ -84,20 +98,33 @@ type Manager struct {
 	streams map[string]struct{}
 	// gen numbers schedules across all conversations, so that a ping still
 	// in flight for a removed conversation cannot match a new one.
-	gen    uint64
-	events []Event
-	totals Totals
+	gen uint64
+	// lastPing is the start of the latest ping, so that the page knows when
+	// to reload the history.
+	lastPing time.Time
+	// store saves the conversations so that they survive a restart of CPA.
+	// restored is set once the saved conversations have been loaded.
+	store    *convStore
+	restored bool
 }
 
 type conversation struct {
 	req         request
 	firstSeen   time.Time
 	lastRequest time.Time
-	nextPing    time.Time
-	pings       int
-	gen         uint64
-	timer       Timer
-	lastUsage   *Usage
+	// lastRead is when the cache was last read: the start of the last
+	// request or of the last successful ping.
+	lastRead  time.Time
+	nextPing  time.Time
+	pings     int
+	gen       uint64
+	timer     Timer
+	lastUsage *Usage
+	// until, when set, replaces max_pings: pings continue until the cache
+	// lasts past this time. hours is the duration that was set. Both are
+	// cleared by the next request.
+	until time.Time
+	hours float64
 }
 
 // Event is the result of one ping.
@@ -106,30 +133,26 @@ type Event struct {
 	Session string    `json:"session"`
 	Key     string    `json:"key"`
 	Model   string    `json:"model"`
+	Agent   bool      `json:"agent,omitempty"`
+	Cwd     string    `json:"cwd,omitempty"`
+	Prompt  string    `json:"prompt,omitempty"`
 	Ping    int       `json:"ping"`
 	Usage   *Usage    `json:"usage,omitempty"`
 	Error   string    `json:"error,omitempty"`
 	Stopped string    `json:"stopped,omitempty"`
 }
 
-// Totals counts pings since the plugin was loaded.
-type Totals struct {
-	Pings               int   `json:"pings"`
-	Failed              int   `json:"failed"`
-	CacheReadTokens     int64 `json:"cache_read_tokens"`
-	CacheCreationTokens int64 `json:"cache_creation_tokens"`
-}
-
 // New creates a Manager with the default config.
 func New(opts Options) *Manager {
 	m := &Manager{
-		host:    opts.Host,
-		clock:   opts.Clock,
-		rand:    opts.Rand,
-		enabled: opts.Enabled,
-		cfg:     config.Default(),
-		convs:   make(map[string]*conversation),
-		streams: make(map[string]struct{}),
+		host:     opts.Host,
+		clock:    opts.Clock,
+		rand:     opts.Rand,
+		enabled:  opts.Enabled,
+		recorder: opts.Recorder,
+		cfg:      config.Default(),
+		convs:    make(map[string]*conversation),
+		streams:  make(map[string]struct{}),
 	}
 	if m.clock == nil {
 		m.clock = realClock{}
@@ -157,11 +180,42 @@ func (m *Manager) Configure(cfg config.Config) {
 	}
 }
 
+// SetStore saves the conversations under dir from now on. The first call
+// after the manager starts or resumes also restores the conversations saved
+// there, keeping their ping counts and schedules.
+func (m *Manager) SetStore(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopped || (m.store != nil && m.store.dir == dir) {
+		return
+	}
+	if m.store != nil {
+		// The old goroutine may be waiting for m.mu, so it is not waited for.
+		m.store.stop()
+	}
+	m.store = newConvStore(m, dir)
+	if !m.restored {
+		m.restored = true
+		m.restoreLocked()
+	}
+	m.store.start()
+	m.persistLocked()
+}
+
 // Stop cancels every schedule, forgets every conversation and closes the
-// streams of pings in flight.
+// streams of pings in flight. It saves the conversations first, so that the
+// next instance restores the latest state; CPA quiesces the old instance
+// before it loads the new one.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	m.stopped = true
+	store := m.store
+	var final []savedConversation
+	if store != nil {
+		final = m.snapshotLocked()
+		m.store = nil
+	}
+	m.restored = false
 	for key := range m.convs {
 		m.removeLocked(key)
 	}
@@ -170,6 +224,13 @@ func (m *Manager) Stop() {
 		streams = append(streams, id)
 	}
 	m.mu.Unlock()
+	if store != nil {
+		store.stop()
+		store.wait()
+		if err := store.write(final); err != nil {
+			m.host.Log("warn", "wick: save conversations: "+err.Error(), nil)
+		}
+	}
 	for _, id := range streams {
 		m.host.ModelStreamClose(id)
 	}
@@ -217,6 +278,7 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) {
 		if c.timer != nil {
 			c.timer.Stop()
 		}
+		c.until, c.hours = time.Time{}, 0
 	} else {
 		if len(m.convs) >= maxConversations {
 			m.evictOldestLocked()
@@ -226,6 +288,7 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) {
 	}
 	c.req = req
 	c.lastRequest = now
+	c.lastRead = now
 	c.pings = 0
 	m.gen++
 	c.gen = m.gen
@@ -249,6 +312,38 @@ func (m *Manager) Complete(done pluginapi.RequestCompletion) {
 	}
 }
 
+// SetDuration keeps the conversation whose short key is key alive for hours
+// from now, in place of max_pings, until the conversation's next request.
+// hours 0 returns it to max_pings. It reports whether a conversation was
+// found.
+func (m *Manager) SetDuration(key string, hours float64) bool {
+	if !(hours >= 0 && hours <= MaxDurationHours) {
+		return false
+	}
+	now := m.clock.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	found := false
+	for full, c := range m.convs {
+		if short(full) != key {
+			continue
+		}
+		found = true
+		if hours > 0 {
+			c.until, c.hours = now.Add(time.Duration(hours*float64(time.Hour))), hours
+			m.logLocked("info", fmt.Sprintf("kept lit for %g h from the management page", hours), c.req, c.pings, "")
+		} else {
+			c.until, c.hours = time.Time{}, 0
+			if c.pings >= m.cfg.MaxPings {
+				m.removeLocked(full)
+				m.logLocked("info", "duration reset from the management page", c.req, c.pings, stopMaxPings)
+			}
+		}
+		m.persistLocked()
+	}
+	return found
+}
+
 // StopConversation stops the keep-alive of the conversation whose short key,
 // as shown in the status, is key. A ping in flight still finishes but does not
 // schedule the next one. It reports whether a conversation was found.
@@ -266,10 +361,16 @@ func (m *Manager) StopConversation(key string) bool {
 	return found
 }
 
+// scheduleLocked sets the next ping at a random delay within the interval
+// after from.
 func (m *Manager) scheduleLocked(key string, c *conversation, from time.Time) {
 	span := m.cfg.IntervalMax - m.cfg.IntervalMin
 	delay := time.Duration(m.cfg.IntervalMin)*time.Second + time.Duration(m.rand()*float64(span)*float64(time.Second))
-	c.nextPing = from.Add(delay)
+	m.scheduleAtLocked(key, c, from.Add(delay))
+}
+
+func (m *Manager) scheduleAtLocked(key string, c *conversation, at time.Time) {
+	c.nextPing = at
 	gen := c.gen
 	wait := c.nextPing.Sub(m.clock.Now())
 	c.timer = m.clock.AfterFunc(wait, func() {
@@ -282,6 +383,7 @@ func (m *Manager) scheduleLocked(key string, c *conversation, from time.Time) {
 		}()
 		m.fire(key, gen)
 	})
+	m.persistLocked()
 }
 
 func (m *Manager) removeLocked(key string) {
@@ -293,14 +395,27 @@ func (m *Manager) removeLocked(key string) {
 		c.timer.Stop()
 	}
 	delete(m.convs, key)
+	m.persistLocked()
 }
 
+// persistLocked asks the store to save the conversations.
+func (m *Manager) persistLocked() {
+	if m.store != nil {
+		m.store.changed()
+	}
+}
+
+// evictOldestLocked removes the conversation whose last request is the
+// oldest, sparing those with a duration set on the management page unless
+// every conversation has one.
 func (m *Manager) evictOldestLocked() {
 	oldest := ""
 	var oldestAt time.Time
+	oldestSet := true
 	for key, c := range m.convs {
-		if oldest == "" || c.lastRequest.Before(oldestAt) {
-			oldest, oldestAt = key, c.lastRequest
+		set := !c.until.IsZero()
+		if oldest == "" || (oldestSet && !set) || (oldestSet == set && c.lastRequest.Before(oldestAt)) {
+			oldest, oldestAt, oldestSet = key, c.lastRequest, set
 		}
 	}
 	if c, ok := m.convs[oldest]; ok {
@@ -316,53 +431,13 @@ func (m *Manager) fire(key string, gen uint64) {
 	if !ok {
 		return
 	}
-
 	start := m.clock.Now()
 	usage, err := m.ping(req)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	event := Event{Time: start, Session: short(req.Session), Key: short(req.Key), Model: req.Model, Ping: n, Usage: usage}
-	m.totals.Pings++
-	if usage != nil {
-		m.totals.CacheReadTokens += usage.CacheReadTokens
-		m.totals.CacheCreationTokens += usage.CacheCreationTokens
-	}
-	current, ok := m.convs[key]
-	stillCurrent := ok && current.gen == gen && !m.stopped
-	switch {
-	case err != nil:
-		m.totals.Failed++
-		event.Error = err.Error()
-		if stillCurrent {
-			event.Stopped = stopError
-			m.removeLocked(key)
+	event := m.finishPing(key, gen, req, n, start, usage, err)
+	if m.recorder != nil {
+		if err := m.recorder.Append(event); err != nil {
+			m.host.Log("warn", "wick: write ping history: "+err.Error(), nil)
 		}
-		m.logLocked("warn", "ping failed: "+err.Error(), req, n, event.Stopped)
-	case usage.CacheCreationTokens > 0:
-		// The replay wrote to the cache, so the entry had expired or the
-		// replay differs from the original request. Further pings would pay
-		// for writes again.
-		if stillCurrent {
-			event.Stopped = stopCacheMiss
-			m.removeLocked(key)
-		}
-		m.logLocked("warn", "ping missed the cache", req, n, event.Stopped, usage)
-	default:
-		if stillCurrent {
-			current.lastUsage = usage
-			if n >= m.cfg.MaxPings {
-				event.Stopped = stopMaxPings
-				m.removeLocked(key)
-			} else {
-				m.scheduleLocked(key, current, start)
-			}
-		}
-		m.logLocked("info", "ping", req, n, event.Stopped, usage)
-	}
-	m.events = append(m.events, event)
-	if len(m.events) > maxEvents {
-		m.events = m.events[len(m.events)-maxEvents:]
 	}
 }
 
@@ -382,6 +457,64 @@ func (m *Manager) beginPing(key string, gen uint64, enabled bool) (request, int,
 	}
 	c.pings++
 	return c.req, c.pings, true
+}
+
+// finishPing applies the result of a ping to its conversation and returns
+// the event to record.
+func (m *Manager) finishPing(key string, gen uint64, req request, n int, start time.Time, usage *Usage, err error) Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	event := Event{
+		Time:    start,
+		Session: short(req.Session),
+		Key:     short(req.Key),
+		Model:   req.Model,
+		Agent:   req.Agent != "",
+		Cwd:     req.Cwd,
+		Prompt:  truncate(req.Prompt, maxEventPromptRunes),
+		Ping:    n,
+		Usage:   usage,
+	}
+	if start.After(m.lastPing) {
+		m.lastPing = start
+	}
+	current, ok := m.convs[key]
+	stillCurrent := ok && current.gen == gen && !m.stopped
+	switch {
+	case err != nil:
+		event.Error = err.Error()
+		if stillCurrent {
+			event.Stopped = stopError
+			m.removeLocked(key)
+		}
+		m.logLocked("warn", "ping failed: "+err.Error(), req, n, event.Stopped)
+	case usage.CacheCreationTokens > 0:
+		// The replay wrote to the cache, so the entry had expired or the
+		// replay differs from the original request. Further pings would pay
+		// for writes again.
+		if stillCurrent {
+			event.Stopped = stopCacheMiss
+			m.removeLocked(key)
+		}
+		m.logLocked("warn", "ping missed the cache", req, n, event.Stopped, usage)
+	default:
+		if stillCurrent {
+			current.lastUsage = usage
+			current.lastRead = start
+			switch {
+			case !current.until.IsZero() && !start.Add(cacheTTL).Before(current.until):
+				event.Stopped = stopUntil
+				m.removeLocked(key)
+			case current.until.IsZero() && n >= m.cfg.MaxPings:
+				event.Stopped = stopMaxPings
+				m.removeLocked(key)
+			default:
+				m.scheduleLocked(key, current, start)
+			}
+		}
+		m.logLocked("info", "ping", req, n, event.Stopped, usage)
+	}
+	return event
 }
 
 // ping replays req and reads the stream until message_start.
@@ -476,9 +609,13 @@ var logFieldOrder = []string{"session", "key", "ping", "stopped", "cache_read", 
 
 // ConversationStatus describes one tracked conversation.
 type ConversationStatus struct {
+	// Session is the full session ID, which names the Claude Code transcript.
 	Session     string    `json:"session"`
 	Key         string    `json:"key"`
 	Model       string    `json:"model"`
+	Agent       bool      `json:"agent,omitempty"`
+	Cwd         string    `json:"cwd,omitempty"`
+	Prompt      string    `json:"prompt,omitempty"`
 	AuthID      string    `json:"auth_id"`
 	FirstSeen   time.Time `json:"first_seen"`
 	LastRequest time.Time `json:"last_request"`
@@ -486,31 +623,37 @@ type ConversationStatus struct {
 	Pings       int       `json:"pings"`
 	BodyBytes   int       `json:"body_bytes"`
 	LastUsage   *Usage    `json:"last_usage,omitempty"`
+	// Until and Hours are set when the management page set a duration for
+	// the conversation.
+	Until *time.Time `json:"until,omitempty"`
+	Hours float64    `json:"hours,omitempty"`
 }
 
 // Status is the response of the status API.
 type Status struct {
 	Config        config.Config        `json:"config"`
 	Conversations []ConversationStatus `json:"conversations"`
-	Totals        Totals               `json:"totals"`
-	Events        []Event              `json:"events"`
+	// LastPing is the start of the latest ping since the plugin was loaded.
+	LastPing time.Time `json:"last_ping"`
 }
 
-// Status returns the tracked conversations and recent ping results.
+// Status returns the tracked conversations.
 func (m *Manager) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	status := Status{
 		Config:        m.cfg,
 		Conversations: make([]ConversationStatus, 0, len(m.convs)),
-		Totals:        m.totals,
-		Events:        append([]Event(nil), m.events...),
+		LastPing:      m.lastPing,
 	}
 	for _, c := range m.convs {
-		status.Conversations = append(status.Conversations, ConversationStatus{
-			Session:     short(c.req.Session),
+		cs := ConversationStatus{
+			Session:     c.req.Session,
 			Key:         short(c.req.Key),
 			Model:       c.req.Model,
+			Agent:       c.req.Agent != "",
+			Cwd:         c.req.Cwd,
+			Prompt:      c.req.Prompt,
 			AuthID:      c.req.AuthID,
 			FirstSeen:   c.firstSeen,
 			LastRequest: c.lastRequest,
@@ -518,7 +661,12 @@ func (m *Manager) Status() Status {
 			Pings:       c.pings,
 			BodyBytes:   len(c.req.Body),
 			LastUsage:   c.lastUsage,
-		})
+		}
+		if !c.until.IsZero() {
+			until := c.until
+			cs.Until, cs.Hours = &until, c.hours
+		}
+		status.Conversations = append(status.Conversations, cs)
 	}
 	sort.Slice(status.Conversations, func(i, j int) bool {
 		return status.Conversations[i].LastRequest.After(status.Conversations[j].LastRequest)

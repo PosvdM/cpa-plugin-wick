@@ -1,13 +1,17 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseEmptyUsesDefaults(t *testing.T) {
 	cfg, err := Parse(nil)
 	if err != nil || cfg != Default() {
 		t.Fatalf("cfg %+v err %v", cfg, err)
 	}
-	if cfg.IntervalMin != 260 || cfg.IntervalMax != 290 || cfg.MaxPings != 6 || cfg.MinBodyKB != 64 {
+	if cfg.IntervalMin != 260 || cfg.IntervalMax != 290 || cfg.MaxPings != 6 || cfg.MinBodyKB != 64 || cfg.HistoryRetentionDays != 40 || cfg.DataDir != "" {
 		t.Fatalf("defaults %+v", cfg)
 	}
 }
@@ -20,7 +24,7 @@ func TestParseKeepsMissingKeys(t *testing.T) {
 }
 
 func TestParseRejectsInvalidIntervals(t *testing.T) {
-	for _, raw := range []string{"interval_max: 300\n", "interval_min: 200\ninterval_max: 100\n", "interval_min: 0\n", "max_pings: -1\n"} {
+	for _, raw := range []string{"interval_max: 300\n", "interval_min: 200\ninterval_max: 100\n", "interval_min: 0\n", "max_pings: -1\n", "history_retention_days: 0\n"} {
 		cfg, err := Parse([]byte(raw))
 		if err == nil || cfg != Default() {
 			t.Errorf("%q: cfg %+v err %v", raw, cfg, err)
@@ -45,5 +49,20 @@ func TestHostConfigPath(t *testing.T) {
 	}
 	if got := HostConfigPath([]string{"cpa", "--config=/x.yaml"}, "/w"); got != "/x.yaml" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDataDir(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	os.WriteFile(cfgPath, []byte("plugins:\n  dir: ./my-plugins\n"), 0o600)
+	if got, want := DataDir("", cfgPath, dir), filepath.Join(dir, "my-plugins", "data", "wick"); got != want {
+		t.Fatalf("default %q, want %q", got, want)
+	}
+	if got, want := DataDir("", filepath.Join(dir, "missing.yaml"), dir), filepath.Join(dir, "plugins", "data", "wick"); got != want {
+		t.Fatalf("without config %q, want %q", got, want)
+	}
+	if got, want := DataDir("state", cfgPath, dir), filepath.Join(dir, "state"); got != want {
+		t.Fatalf("relative data_dir %q, want %q", got, want)
 	}
 }

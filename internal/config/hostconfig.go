@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -44,4 +45,43 @@ func PluginEnabled(raw []byte) (bool, error) {
 		return false, err
 	}
 	return cfg.Plugins.Enabled && cfg.Plugins.Configs[PluginID].Enabled, nil
+}
+
+// PluginsDir returns plugins.dir from the CPA config, defaulting to "plugins"
+// and expanding a leading "~" to the home directory like CPA does.
+func PluginsDir(raw []byte) string {
+	var cfg struct {
+		Plugins struct {
+			Dir string `yaml:"dir"`
+		} `yaml:"plugins"`
+	}
+	_ = yaml.Unmarshal(raw, &cfg)
+	dir := strings.TrimSpace(cfg.Plugins.Dir)
+	if dir == "" {
+		return "plugins"
+	}
+	if rest, ok := strings.CutPrefix(dir, "~"); ok {
+		if home, err := os.UserHomeDir(); err == nil {
+			rest = strings.TrimLeft(rest, `/\`)
+			return filepath.Join(home, filepath.FromSlash(strings.ReplaceAll(rest, `\`, "/")))
+		}
+	}
+	return filepath.Clean(dir)
+}
+
+// DataDir returns the directory of the ping history: dataDir when set, or
+// <plugins.dir>/data/wick, reading plugins.dir from the CPA config file. A
+// relative path is relative to the CPA working directory. CPA loads plugins
+// from copies in the temp directory, so the path of the loaded library does
+// not point to the plugin directory.
+func DataDir(dataDir, hostConfigPath, workDir string) string {
+	dir := dataDir
+	if dir == "" {
+		raw, _ := os.ReadFile(hostConfigPath)
+		dir = filepath.Join(PluginsDir(raw), "data", PluginID)
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(workDir, dir)
+	}
+	return filepath.Clean(dir)
 }

@@ -21,7 +21,7 @@
 
 <main id="app" hidden>
   <header>
-    <h1><a class="home" href="https://github.com/PosvdM/cpa-plugin-wick" target="_blank" rel="noopener" title="在 GitHub 上查看" data-i18n-title="repo_hint">Wick</a><span class="sub" data-i18n="app_sub">灯芯</span></h1>
+    <h1><a class="home" href="https://github.com/PosvdM/cpa-plugin-wick" target="_blank" rel="noopener" title="在 GitHub 上查看" data-i18n-title="repo_hint">Wick</a><span class="sub" data-i18n="app_sub">挑灯</span></h1>
     <span id="state" class="state"></span>
     <span id="meta" class="meta"></span>
   </header>
@@ -33,58 +33,66 @@
     <p class="hint settings-note" data-i18n="save_hint">修改后自动保存到 CPA 的 config.yaml，插件几秒内应用。</p>
     <form id="settings">
       <div class="field">
-        <span class="field-label" data-i18n="duration">保活时长</span>
+        <span class="field-label" data-i18n="duration">默认挑灯时长</span>
         <div class="duration-row">
-          <div class="segmented" id="duration-buttons" role="group" aria-label="保活时长" data-i18n-aria-label="duration">
+          <div class="segmented" id="duration-buttons" role="group" aria-label="默认挑灯时长" data-i18n-aria-label="duration">
             <button type="button" class="seg" data-value="0" aria-pressed="false" data-i18n="duration_off">关闭</button>
             <button type="button" class="seg" data-value="2" aria-pressed="false" data-i18n="duration_15">15 分钟</button>
             <button type="button" class="seg" data-value="6" aria-pressed="false" data-i18n="duration_30">30 分钟</button>
             <button type="button" class="seg" data-value="12" aria-pressed="false" data-i18n="duration_60">1 小时</button>
             <button type="button" class="seg" data-value="custom" aria-pressed="false" data-i18n="duration_custom">自定义</button>
           </div>
-          <label id="custom-pings" class="inline-input" hidden><span data-i18n="max_pings">最多保活</span><input name="max_pings" type="number" min="0" max="1000" step="1"><span data-i18n="times">次</span></label>
+          <label id="custom-pings" class="inline-input" hidden><span data-i18n="max_pings">最多挑灯</span><input name="max_pings" type="number" min="0" max="1000" step="1"><span data-i18n="times">次</span></label>
         </div>
         <p id="duration-hint" class="hint"></p>
       </div>
       <details class="advanced">
-        <summary data-i18n="advanced">高级设置</summary>
-        <div class="grid-3">
+        <summary><span data-i18n="advanced">高级设置</span><span class="summary-note" data-i18n="advanced_scope">对所有对话生效</span></summary>
+        <div class="grid-4">
           <label><span data-i18n="interval_min">最短间隔（秒）</span><input name="interval_min" type="number" min="1" max="299" step="1"></label>
           <label><span data-i18n="interval_max">最长间隔（秒）</span><input name="interval_max" type="number" min="1" max="299" step="1"></label>
           <label><span data-i18n="min_body_kb">最小请求体（KiB）</span><input name="min_body_kb" type="number" min="0" step="1"></label>
+          <label><span data-i18n="history_retention_days">记录保留（天）</span><input name="history_retention_days" type="number" min="1" max="3650" step="1"></label>
         </div>
-        <p class="hint" data-i18n="advanced_hint">每次保活的时刻在最短和最长间隔之间随机选取，最长间隔不超过 299 秒。请求体小于最小请求体的请求不保活，如生成标题等辅助请求。</p>
+        <p class="hint" data-i18n="advanced_hint">每次挑灯的时刻在最短和最长间隔之间随机选取，最长间隔不超过 299 秒。请求体小于最小请求体的请求不挑灯，如生成标题等辅助请求。</p>
       </details>
     </form>
   </section>
 
   <section class="card">
-    <h2 class="card-title"><span data-i18n="conversations">正在保活的对话</span><span id="conversation-count" class="count"></span></h2>
+    <h2 class="card-title"><span data-i18n="conversations">正在挑灯的对话</span><span id="conversation-count" class="count"></span></h2>
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th data-i18n="col_session">会话</th><th data-i18n="col_model">模型</th><th data-i18n="col_account">账号</th><th class="num" data-i18n="col_context">缓存</th><th class="num" data-i18n="col_pings">已保活</th><th data-i18n="col_idle">空闲</th><th data-i18n="col_next">下次保活</th><th></th></tr>
+          <tr><th data-i18n="col_conversation">对话</th><th data-i18n="col_model_account">模型 / 账号</th><th class="num" data-i18n="col_context">缓存</th><th class="num" data-i18n="col_pings">已挑灯</th><th data-i18n="col_idle">空闲</th><th data-i18n="col_next">下次挑灯</th><th data-i18n="col_duration">时长</th><th></th></tr>
         </thead>
         <tbody id="conversations"></tbody>
       </table>
     </div>
-    <p id="conversations-empty" class="empty" data-i18n="no_conversations" hidden>没有正在保活的对话。Claude Code 发出请求后，对话显示在这里。</p>
+    <p id="conversations-empty" class="empty" data-i18n="no_conversations" hidden>没有正在挑灯的对话。Claude Code 发出请求后，对话显示在这里。</p>
   </section>
 
   <section class="card">
-    <h2 class="card-title" data-i18n="events">保活记录</h2>
+    <div class="card-head">
+      <h2 class="card-title" data-i18n="events">挑灯记录</h2>
+      <div class="segmented" id="range-buttons" role="group" aria-label="范围" data-i18n-aria-label="range">
+        <button type="button" class="seg" data-value="24h" aria-pressed="true" data-i18n="range_24h">24 小时</button>
+        <button type="button" class="seg" data-value="7d" aria-pressed="false" data-i18n="range_7d">7 天</button>
+        <button type="button" class="seg" data-value="all" aria-pressed="false" data-i18n="range_all">全部</button>
+      </div>
+    </div>
     <p id="totals" class="totals"></p>
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th data-i18n="col_time">时间</th><th data-i18n="col_session">会话</th><th data-i18n="col_model">模型</th><th class="num" data-i18n="col_ping">次数</th><th class="num" data-i18n="col_read">缓存读取</th><th class="num" data-i18n="col_write">缓存写入</th><th data-i18n="col_result">结果</th></tr>
+          <tr><th data-i18n="col_time">时间</th><th data-i18n="col_conversation">对话</th><th data-i18n="col_model">模型</th><th class="num" data-i18n="col_ping">次数</th><th class="num" data-i18n="col_read">缓存读取</th><th class="num" data-i18n="col_write">缓存写入</th><th data-i18n="col_result">结果</th></tr>
         </thead>
         <tbody id="events"></tbody>
       </table>
     </div>
-    <p id="events-empty" class="empty" data-i18n="no_events" hidden>还没有保活记录。</p>
+    <p id="events-empty" class="empty" data-i18n="no_events" hidden>所选范围内没有挑灯记录。</p>
     <button id="events-more" class="btn btn-ghost btn-sm events-more" type="button" hidden></button>
-    <p class="hint" data-i18n="memory_hint">记录只保存在内存中，最多 100 条；CPA 重启或插件重新加载后清空。</p>
+    <p id="history-hint" class="hint"></p>
   </section>
 </main>
 <div id="toast" class="toast" hidden></div>

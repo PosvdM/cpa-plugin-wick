@@ -45,8 +45,12 @@ type request struct {
 	Agent string
 	// Key identifies one conversation: the session, the agent ID, and the
 	// system prompt and tools, which also differ between kinds of subagent.
-	Key       string
-	Model     string
+	Key   string
+	Model string
+	// Cwd and Prompt describe the conversation on the management page: the
+	// working directory and the first prompt.
+	Cwd       string
+	Prompt    string
 	AuthID    string
 	RequestID string
 	Headers   http.Header
@@ -93,6 +97,8 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 		Key:       conversationKey(session, agent, model, req.Body),
 		Model:     model,
 		RequestID: req.RequestID,
+		Cwd:       workingDirectory(req.Body),
+		Prompt:    firstPrompt(req.Body),
 	}
 	if ttl1hPattern.Match(req.Body) {
 		return out, skipTTL1h
@@ -103,7 +109,11 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 	}
 	out.Body = bytes.Clone(req.Body)
 	out.Headers = req.Headers.Clone()
-	out.Headers.Del("Content-Length")
+	// The executor sets the account's credentials itself, so the client's
+	// credentials for CPA are not needed and are not kept or saved.
+	for _, name := range []string{"Content-Length", "Authorization", "X-Api-Key", "Proxy-Authorization", "Cookie"} {
+		out.Headers.Del(name)
+	}
 	return out, ""
 }
 

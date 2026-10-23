@@ -109,12 +109,37 @@ func (h *fakeHost) pings() int {
 
 var start = time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 
+// fakeRecorder keeps the recorded events.
+type fakeRecorder struct {
+	mu     sync.Mutex
+	events []Event
+}
+
+func (r *fakeRecorder) Append(ev Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, ev)
+	return nil
+}
+
+func (r *fakeRecorder) all() []Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Event(nil), r.events...)
+}
+
 func newTestManager(cfg config.Config) (*Manager, *fakeClock, *fakeHost) {
+	m, clock, h, _ := newRecordingManager(cfg)
+	return m, clock, h
+}
+
+func newRecordingManager(cfg config.Config) (*Manager, *fakeClock, *fakeHost, *fakeRecorder) {
 	clock := &fakeClock{now: start}
 	h := &fakeHost{cacheRead: 40000}
-	m := New(Options{Host: h, Clock: clock, Rand: func() float64 { return 0 }})
+	rec := &fakeRecorder{}
+	m := New(Options{Host: h, Clock: clock, Rand: func() float64 { return 0 }, Recorder: rec})
 	m.Configure(cfg)
-	return m, clock, h
+	return m, clock, h, rec
 }
 
 func testConfig() config.Config {
@@ -141,6 +166,7 @@ func intercept(id, session string, b []byte) pluginapi.RequestInterceptRequest {
 			"Anthropic-Beta":           {"claude-code-20250219"},
 			"X-Claude-Code-Session-Id": {session},
 			"Content-Length":           {"123"},
+			"Authorization":            {"Bearer client-key"},
 		},
 		Body:     b,
 		Metadata: map[string]any{"selected_auth_id": "claude-a.json"},
@@ -158,7 +184,7 @@ func TestParseRequestBuildsReplay(t *testing.T) {
 	if string(req.Body) != string(body("main", "1")) {
 		t.Fatalf("body changed:\n%s", req.Body)
 	}
-	if req.Headers.Get("Content-Length") != "" || req.Headers.Get("X-App") != "cli" {
+	if req.Headers.Get("Content-Length") != "" || req.Headers.Get("Authorization") != "" || req.Headers.Get("X-App") != "cli" {
 		t.Fatalf("headers %v", req.Headers)
 	}
 }
@@ -249,25 +275,144 @@ func TestNewRequestResetsSchedule(t *testing.T) {
 }
 
 func TestCacheMissStops(t *testing.T) {
-	m, clock, h := newTestManager(testConfig())
+	m, clock, h, rec := newRecordingManager(testConfig())
 	h.cacheCreation = 5000
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	clock.Advance(time.Hour)
 	if h.pings() != 1 {
 		t.Fatalf("pings %d after a cache miss", h.pings())
 	}
-	if ev := m.Status().Events; len(ev) != 1 || ev[0].Stopped != stopCacheMiss {
+	if ev := rec.all(); len(ev) != 1 || ev[0].Stopped != stopCacheMiss {
 		t.Fatalf("events %+v", ev)
 	}
 }
 
 func TestErrorStops(t *testing.T) {
-	m, clock, h := newTestManager(testConfig())
+	m, clock, h, rec := newRecordingManager(testConfig())
 	h.execErr = errors.New("boom")
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	clock.Advance(time.Hour)
-	if h.pings() != 1 || m.Status().Totals.Failed != 1 {
-		t.Fatalf("pings %d status %+v", h.pings(), m.Status().Totals)
+	if ev := rec.all(); h.pings() != 1 || len(ev) != 1 || ev[0].Error != "boom" || ev[0].Stopped != stopError {
+		t.Fatalf("pings %d events %+v", h.pings(), ev)
+	}
+}
+
+func TestEventDescribesConversation(t *testing.T) {
+	b := []byte(`{"model":"claude-opus-5-5","system":[{"type":"text","text":"x-anthropic-billing-header: cch=1;"},{"type":"text","text":"# Environment\n - Primary working directory: /home/me/project\n - Is a git repository: true"}],"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>CLAUDE.md</system-reminder>"},{"type":"text","text":"Fix the   login\nbug"}]}],"stream":true}`)
+	m, clock, _, rec := newRecordingManager(testConfig())
+	m.Observe(withAgent(intercept("r1", "sess", b), "a1"))
+	c := m.Status().Conversations[0]
+	if c.Cwd != "/home/me/project" || c.Prompt != "Fix the login bug" || !c.Agent || c.Session != "sess" {
+		t.Fatalf("status %+v", c)
+	}
+	clock.Advance(260 * time.Second)
+	if ev := rec.all(); len(ev) != 1 || ev[0].Cwd != "/home/me/project" || ev[0].Prompt != "Fix the login bug" || !ev[0].Agent {
+		t.Fatalf("events %+v", ev)
+	}
+}
+
+func TestWorkingDirectoryAndFirstPrompt(t *testing.T) {
+	dirs := map[string]string{
+		`{"system":[{"type":"text","text":" - Primary working directory: D:\\Code\\app (was D:\\old)\n"}]}`: `D:\Code\app`,
+		`{"system":"<env>\nWorking directory: /srv/x\n</env>"}`:                                             "/srv/x",
+		`{"system":[{"type":"text","text":"no directory"}]}`:                                                "",
+	}
+	for raw, want := range dirs {
+		if got := workingDirectory([]byte(raw)); got != want {
+			t.Errorf("%s: dir %q, want %q", raw, got, want)
+		}
+	}
+	prompts := map[string]string{
+		`{"messages":[{"role":"user","content":"hello"}]}`: "hello",
+		`{"messages":[{"role":"user","content":[{"type":"text","text":"<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>42</command-args>"}]}]}`:                                                                                                                                        "/review 42",
+		`{"messages":[{"role":"user","content":[{"type":"text","text":"Caveat: The messages below were generated by the user while running local commands. DO NOT respond."},{"type":"text","text":"<local-command-stdout>ok</local-command-stdout>"}]},{"role":"assistant","content":"x"},{"role":"user","content":"real prompt"}]}`: "real prompt",
+		`{"messages":[{"role":"user","content":[{"type":"tool_result","content":"x"}]}]}`: "",
+	}
+	for raw, want := range prompts {
+		if got := firstPrompt([]byte(raw)); got != want {
+			t.Errorf("%s: prompt %q, want %q", raw, got, want)
+		}
+	}
+	long := firstPrompt([]byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("字", 300) + `"}]}`))
+	if n := len([]rune(long)); n != maxPromptRunes || !strings.HasSuffix(long, "…") {
+		t.Fatalf("long prompt %d runes", n)
+	}
+}
+
+func TestSetDurationReplacesMaxPings(t *testing.T) {
+	m, clock, h, rec := newRecordingManager(testConfig())
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
+	if m.SetDuration(key, 25) || m.SetDuration("unknown", 1) {
+		t.Fatal("accepted an invalid duration or key")
+	}
+	if !m.SetDuration(key, 2) {
+		t.Fatal("conversation not found")
+	}
+	if c := m.Status().Conversations[0]; c.Until == nil || !c.Until.Equal(start.Add(2*time.Hour)) || c.Hours != 2 {
+		t.Fatalf("status %+v", c)
+	}
+	clock.Advance(3 * time.Hour)
+	// Pings every 260 s; the last one is the first whose cache lasts past
+	// two hours: (7200 - 300) / 260 rounded up.
+	if h.pings() != 27 {
+		t.Fatalf("pings %d, want 27", h.pings())
+	}
+	if ev := rec.all(); ev[len(ev)-1].Stopped != stopUntil {
+		t.Fatalf("last event %+v", ev[len(ev)-1])
+	}
+}
+
+func TestNewRequestClearsDuration(t *testing.T) {
+	m, clock, h := newTestManager(testConfig())
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
+	m.SetDuration(key, 8)
+	m.Observe(intercept("r2", "sess", body("main", "2")))
+	if c := m.Status().Conversations[0]; c.Until != nil {
+		t.Fatalf("duration kept after a new request: %+v", c)
+	}
+	clock.Advance(8 * time.Hour)
+	if h.pings() != testConfig().MaxPings {
+		t.Fatalf("pings %d, want max_pings", h.pings())
+	}
+}
+
+func TestResetDurationAfterMaxPings(t *testing.T) {
+	m, clock, h := newTestManager(testConfig())
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
+	m.SetDuration(key, 1)
+	clock.Advance(40 * time.Minute)
+	if !m.SetDuration(key, 0) || len(m.Status().Conversations) != 0 {
+		t.Fatal("conversation kept after resetting a duration past max_pings")
+	}
+	n := h.pings()
+	clock.Advance(time.Hour)
+	if h.pings() != n {
+		t.Fatal("pinged after the reset")
+	}
+}
+
+func TestEvictionSparesSetDurations(t *testing.T) {
+	m, clock, _ := newTestManager(testConfig())
+	m.Observe(intercept("r0", "kept", body("main", "1")))
+	m.SetDuration(short(conversationKey("kept", "", "claude-opus-5-5", body("main", "1"))), 4)
+	for i := 1; i <= maxConversations; i++ {
+		clock.Advance(time.Second)
+		m.Observe(intercept(fmt.Sprintf("r%d", i), fmt.Sprintf("s%d", i), body("main", "1")))
+	}
+	found := false
+	for _, c := range m.Status().Conversations {
+		if c.Session == "kept" {
+			found = true
+		}
+		if c.Session == "s1" {
+			t.Fatal("the oldest conversation without a duration was kept")
+		}
+	}
+	if !found {
+		t.Fatal("conversation with a duration was evicted")
 	}
 }
 

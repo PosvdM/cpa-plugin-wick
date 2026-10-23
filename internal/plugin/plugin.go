@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/PosvdM/cpa-plugin-wick/internal/config"
+	"github.com/PosvdM/cpa-plugin-wick/internal/history"
 	"github.com/PosvdM/cpa-plugin-wick/internal/host"
 	"github.com/PosvdM/cpa-plugin-wick/internal/keepalive"
 	"github.com/PosvdM/cpa-plugin-wick/internal/web"
@@ -32,21 +36,28 @@ type Plugin struct {
 	version        string
 	host           host.Host
 	manager        *keepalive.Manager
+	history        *history.Store
 	hostConfigPath string
+	workDir        string
 
 	mu          sync.Mutex
 	configError string
 }
 
-// New creates the plugin. hostConfigPath is the CPA config file.
-func New(h host.Host, version, hostConfigPath string) *Plugin {
+// New creates the plugin. hostConfigPath is the CPA config file and
+// workDir the CPA working directory, against which relative paths resolve.
+func New(h host.Host, version, hostConfigPath, workDir string) *Plugin {
+	store := history.New()
 	return &Plugin{
 		version:        version,
 		host:           h,
 		hostConfigPath: hostConfigPath,
+		workDir:        workDir,
+		history:        store,
 		manager: keepalive.New(keepalive.Options{
-			Host:    h,
-			Enabled: func() bool { return enabledInHostConfig(hostConfigPath) },
+			Host:     h,
+			Enabled:  func() bool { return enabledInHostConfig(hostConfigPath) },
+			Recorder: store,
 		}),
 	}
 }
@@ -129,6 +140,9 @@ func (p *Plugin) handle(method string, request []byte) ([]byte, error) {
 		p.configError = configError
 		p.mu.Unlock()
 		p.manager.Configure(cfg)
+		dir := config.DataDir(cfg.DataDir, p.hostConfigPath, p.workDir)
+		p.history.Configure(filepath.Join(dir, "history"), cfg.HistoryRetentionDays)
+		p.manager.SetStore(filepath.Join(dir, "conversations"))
 		return ok(p.registration())
 	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
 		p.manager.Stop()
@@ -180,10 +194,12 @@ func (p *Plugin) registration() registration {
 			Author:           "PosvdM",
 			GitHubRepository: repository,
 			ConfigFields: []pluginapi.ConfigField{
-				field("interval_min", pluginapi.ConfigFieldTypeInteger, "最短保活间隔（秒） / Shortest keep-alive interval in seconds"),
-				field("interval_max", pluginapi.ConfigFieldTypeInteger, "最长保活间隔（秒），不超过 299 / Longest keep-alive interval in seconds, at most 299"),
-				field("max_pings", pluginapi.ConfigFieldTypeInteger, "一次空闲最多保活几次，0 为关闭 / Pings per idle period; 0 turns keep-alive off"),
-				field("min_body_kb", pluginapi.ConfigFieldTypeInteger, "请求体小于此大小（KiB）时不保活 / Skip requests whose body is smaller than this many KiB"),
+				field("interval_min", pluginapi.ConfigFieldTypeInteger, "最短挑灯间隔（秒） / Shortest interval between pings in seconds"),
+				field("interval_max", pluginapi.ConfigFieldTypeInteger, "最长挑灯间隔（秒），不超过 299 / Longest interval between pings in seconds, at most 299"),
+				field("max_pings", pluginapi.ConfigFieldTypeInteger, "一次空闲最多挑灯几次，0 为关闭 / Pings per idle period; 0 turns Wick off"),
+				field("min_body_kb", pluginapi.ConfigFieldTypeInteger, "请求体小于此大小（KiB）时不挑灯 / Skip requests whose body is smaller than this many KiB"),
+				field("history_retention_days", pluginapi.ConfigFieldTypeInteger, "挑灯记录保留天数 / Days of ping history to keep"),
+				field("data_dir", pluginapi.ConfigFieldTypeString, "数据目录，默认 <插件目录>/data/wick / Data directory, <plugins dir>/data/wick by default"),
 			},
 		},
 		Capabilities: map[string]bool{
@@ -209,11 +225,13 @@ type resource struct {
 func managementRegistration() map[string]any {
 	return map[string]any{
 		"routes": []route{
-			{Method: http.MethodGet, Path: apiBase + "/status", Description: "Wick keep-alive status"},
-			{Method: http.MethodPost, Path: apiBase + "/stop", Description: "Stop the keep-alive of one conversation"},
+			{Method: http.MethodGet, Path: apiBase + "/status", Description: "Conversations kept lit"},
+			{Method: http.MethodGet, Path: apiBase + "/history", Description: "Ping history"},
+			{Method: http.MethodPost, Path: apiBase + "/duration", Description: "Set how long one conversation is kept lit"},
+			{Method: http.MethodPost, Path: apiBase + "/stop", Description: "Snuff out one conversation"},
 		},
 		"resources": []resource{
-			{Path: pagePath, Menu: "Wick", Description: "提示缓存保活的状态和设置 / Prompt cache keep-alive status and settings"},
+			{Path: pagePath, Menu: "Wick", Description: "提示缓存挑灯的状态和设置 / Prompt cache keep-alive status and settings"},
 		},
 	}
 }
@@ -225,6 +243,8 @@ type status struct {
 	// Enabled is the enabled flag in the CPA config.
 	Enabled     bool   `json:"enabled"`
 	ConfigError string `json:"config_error,omitempty"`
+	// DataDir is the directory of the ping history and saved conversations.
+	DataDir string `json:"data_dir"`
 	// Now lets the page count down in the plugin's clock.
 	Now time.Time `json:"now"`
 	keepalive.Status
@@ -238,6 +258,7 @@ func (p *Plugin) status() status {
 		Version:     p.version,
 		Enabled:     enabledInHostConfig(p.hostConfigPath),
 		ConfigError: configError,
+		DataDir:     filepath.Dir(p.history.Dir()),
 		Now:         time.Now(),
 		Status:      p.manager.Status(),
 	}
@@ -271,6 +292,23 @@ func (p *Plugin) handleManagement(req pluginapi.ManagementRequest) pluginapi.Man
 	switch strings.ToUpper(req.Method) + " " + path {
 	case "GET " + apiBase + "/status":
 		return jsonResponse(http.StatusOK, p.status())
+	case "GET " + apiBase + "/history":
+		return p.historyResponse(req.Query)
+	case "POST " + apiBase + "/duration":
+		var body struct {
+			Key   string   `json:"key"`
+			Hours *float64 `json:"hours"`
+		}
+		if err := json.Unmarshal(req.Body, &body); err != nil || strings.TrimSpace(body.Key) == "" || body.Hours == nil {
+			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "key and hours are required"})
+		}
+		if !(*body.Hours >= 0 && *body.Hours <= keepalive.MaxDurationHours) {
+			return jsonResponse(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("hours must be between 0 and %d", keepalive.MaxDurationHours)})
+		}
+		if !p.manager.SetDuration(strings.TrimSpace(body.Key), *body.Hours) {
+			return jsonResponse(http.StatusNotFound, map[string]string{"error": "conversation not found"})
+		}
+		return jsonResponse(http.StatusOK, p.status())
 	case "POST " + apiBase + "/stop":
 		var body struct {
 			Key string `json:"key"`
@@ -284,4 +322,55 @@ func (p *Plugin) handleManagement(req pluginapi.ManagementRequest) pluginapi.Man
 		return jsonResponse(http.StatusOK, p.status())
 	}
 	return jsonResponse(http.StatusNotFound, map[string]string{"error": fmt.Sprintf("unknown route %s %s", req.Method, req.Path)})
+}
+
+// Limits on the number of events the history API returns.
+const (
+	defaultHistoryLimit = 20
+	maxHistoryLimit     = 5000
+)
+
+type historyResponse struct {
+	Range  string         `json:"range"`
+	From   time.Time      `json:"from"`
+	Totals history.Totals `json:"totals"`
+	// Count is the number of events in the range; Events holds the newest
+	// limit of them, newest first.
+	Count  int               `json:"count"`
+	Events []keepalive.Event `json:"events"`
+}
+
+// historyResponse answers GET /history?range=24h|7d|all&limit=N. "all"
+// covers the retention.
+func (p *Plugin) historyResponse(query url.Values) pluginapi.ManagementResponse {
+	now := time.Now()
+	rng := query.Get("range")
+	var from time.Time
+	switch rng {
+	case "", "24h":
+		rng, from = "24h", now.Add(-24*time.Hour)
+	case "7d":
+		from = now.AddDate(0, 0, -7)
+	case "all":
+		from = now.AddDate(0, 0, -p.history.Retention()-1)
+	default:
+		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "range must be 24h, 7d or all"})
+	}
+	limit := defaultHistoryLimit
+	if raw := query.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "limit must be a positive integer"})
+		}
+		limit = min(n, maxHistoryLimit)
+	}
+	events, err := p.history.Query(from)
+	if err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	resp := historyResponse{Range: rng, From: from, Totals: history.Sum(events), Count: len(events), Events: []keepalive.Event{}}
+	for i := len(events) - 1; i >= 0 && len(resp.Events) < limit; i-- {
+		resp.Events = append(resp.Events, events[i])
+	}
+	return jsonResponse(http.StatusOK, resp)
 }

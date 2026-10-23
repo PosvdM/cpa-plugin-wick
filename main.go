@@ -93,7 +93,7 @@ func cliproxy_plugin_init(hostAPI *C.cliproxy_host_api, pluginAPI *C.cliproxy_pl
 
 	workDir, _ := os.Getwd()
 	instanceMu.Lock()
-	instance = plugin.New(host.RPC{Call: callHost}, version, config.HostConfigPath(os.Args, workDir))
+	instance = plugin.New(host.RPC{Call: callHost}, version, config.HostConfigPath(os.Args, workDir), workDir)
 	instanceMu.Unlock()
 	return 0
 }
