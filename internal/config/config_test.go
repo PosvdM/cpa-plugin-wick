@@ -7,14 +7,14 @@ func TestParseEmptyUsesDefaults(t *testing.T) {
 	if err != nil || cfg != Default() {
 		t.Fatalf("cfg %+v err %v", cfg, err)
 	}
-	if cfg.IntervalMin != 260 || cfg.IntervalMax != 290 || cfg.MaxPings != 12 || cfg.MinBodyKB != 64 {
+	if cfg.IntervalMin != 260 || cfg.IntervalMax != 290 || cfg.MaxPings != 6 || cfg.MinBodyKB != 64 {
 		t.Fatalf("defaults %+v", cfg)
 	}
 }
 
 func TestParseKeepsMissingKeys(t *testing.T) {
-	cfg, err := Parse([]byte("enabled: true\nmax_pings: 6\n"))
-	if err != nil || cfg.MaxPings != 6 || cfg.IntervalMin != 260 {
+	cfg, err := Parse([]byte("enabled: true\nmax_pings: 3\n"))
+	if err != nil || cfg.MaxPings != 3 || cfg.IntervalMin != 260 {
 		t.Fatalf("cfg %+v err %v", cfg, err)
 	}
 }

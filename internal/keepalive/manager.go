@@ -40,6 +40,7 @@ const (
 	stopSuperseded = "superseded"
 	stopEvicted    = "evicted"
 	stopTTL1h      = "ttl_1h"
+	stopManual     = "manual"
 )
 
 // Clock abstracts time so that tests can drive the scheduler.
@@ -246,6 +247,23 @@ func (m *Manager) Complete(done pluginapi.RequestCompletion) {
 			m.logLocked("info", "request failed, keep-alive stopped", c.req, c.pings, stopFailed)
 		}
 	}
+}
+
+// StopConversation stops the keep-alive of the conversation whose short key,
+// as shown in the status, is key. A ping in flight still finishes but does not
+// schedule the next one. It reports whether a conversation was found.
+func (m *Manager) StopConversation(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	found := false
+	for full, c := range m.convs {
+		if short(full) == key {
+			m.removeLocked(full)
+			m.logLocked("info", "keep-alive stopped from the management page", c.req, c.pings, stopManual)
+			found = true
+		}
+	}
+	return found
 }
 
 func (m *Manager) scheduleLocked(key string, c *conversation, from time.Time) {

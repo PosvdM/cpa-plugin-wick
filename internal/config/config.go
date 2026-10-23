@@ -28,7 +28,7 @@ type Config struct {
 
 // Default returns the default settings.
 func Default() Config {
-	return Config{IntervalMin: 260, IntervalMax: 290, MaxPings: 12, MinBodyKB: 64}
+	return Config{IntervalMin: 260, IntervalMax: 290, MaxPings: 6, MinBodyKB: 64}
 }
 
 // Parse decodes the plugin config subtree. Missing keys keep their defaults.

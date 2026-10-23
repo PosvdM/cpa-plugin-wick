@@ -420,3 +420,24 @@ func TestStalePingAfterRecreate(t *testing.T) {
 		t.Fatalf("pings %d, want one chain of %d", h.pings(), testConfig().MaxPings)
 	}
 }
+
+func TestStopConversation(t *testing.T) {
+	m, clock, h := newTestManager(testConfig())
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	m.Observe(intercept("r2", "other", body("main", "1")))
+	key := conversationKey("sess", "", "claude-opus-5-5", body("main", "1"))
+	if m.StopConversation("unknown") {
+		t.Fatal("stopped an unknown conversation")
+	}
+	if !m.StopConversation(short(key)) {
+		t.Fatal("conversation not found by its short key")
+	}
+	convs := m.Status().Conversations
+	if len(convs) != 1 || convs[0].Session != "other" {
+		t.Fatalf("conversations %+v", convs)
+	}
+	clock.Advance(260 * time.Second)
+	if h.pings() != 1 || h.requests[0].Headers.Get("X-Claude-Code-Session-Id") != "other" {
+		t.Fatalf("pings %d, want only the other conversation", h.pings())
+	}
+}

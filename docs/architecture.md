@@ -11,6 +11,7 @@
 | `internal/keepalive` | 请求筛选、对话识别、续期调度和 SSE 用量解析 |
 | `internal/host` | 宿主回调的封装：流式模型执行、读取、关闭和日志 |
 | `internal/config` | 解析 `plugins.configs.wick`，读取 CPA 配置中的启用状态 |
+| `internal/web` | 管理页面。HTML、CSS 和 JavaScript 分文件编辑，嵌入插件后合成一个文档返回 |
 
 ## 与 CPA 的接口
 
@@ -35,6 +36,23 @@
 - CPA 卸载插件时先拒绝该插件的所有宿主回调，再调用 `plugin.shutdown`。此时进行中的续期流无法关闭，会一直占用。`plugin.quiesce`（热更新替换时调用）不受影响。
 - 续期请求和普通请求一样计入账号状态，失败（如 429）会让账号进入冷却。
 - CPA 的日志格式只输出它认识的字段（如 `model`），插件传给 `host.log` 的其他字段会被丢掉，因此插件把这些字段也写进日志正文。
+
+## 管理接口和页面
+
+`management_api` 注册以下路由和一个页面。两个 `/v0/management/wick/` 路由需要 CPA 管理密钥；页面属于资源路由，CPA 不做鉴权，页面本身不含任何数据，数据都通过需要密钥的接口读取：
+
+| 路由 | 用途 |
+| --- | --- |
+| `GET /v0/management/wick/status` | 返回 `Manager.Status()`，外加插件版本 `version`、CPA 配置中的启用开关 `enabled`、配置错误 `config_error` 和插件时钟 `now` |
+| `POST /v0/management/wick/stop` | 请求体为 `{"key": "<对话键前 8 位>"}`，停止该对话的续期并返回新的状态；找不到对话时返回 404 |
+| `GET /v0/resource/plugins/wick/page` | 管理页面，在管理中心菜单中显示为 Wick |
+
+页面的实现：
+
+- 页面运行在管理中心的同源 iframe 中。管理密钥取自管理中心的 `localStorage`（`cli-proxy-auth`，用主机和 User-Agent 派生的密钥做异或混淆）；取不到时让用户输入，只存在 `sessionStorage`。主题和语言读取父页面根元素的 `data-theme` 和 `lang`，单独打开时读取管理中心存在 `localStorage` 中的设置。这部分与 Lamplighter 的管理页面相同。
+- 设置通过 CPA 的 `GET` / `PATCH /v0/management/plugins/wick/config` 读写。CPA 对顶层键做浅合并后写入 `config.yaml`，再热加载并调用 `plugin.reconfigure`。CPA 不校验插件配置，因此页面在保存前检查间隔范围和整数；插件收到无效配置时使用默认值，并在状态中返回 `config_error`。
+- 保活时长的预设与 `max_pings` 的对应关系在 `page.js` 的 `PRESETS` 中。估算的缓存保持时间为 `max_pings × (interval_min + interval_max) / 2 + 300` 秒，页面按分钟向下取整显示。
+- 页面每 5 秒刷新一次状态，标签页不可见时暂停。空闲时长和倒计时每秒在本地更新，按状态中的 `now` 校正与插件时钟的偏差。
 
 ## 续期请求
 
@@ -74,6 +92,7 @@
 - `max_pings` 改为 0 时清空所有对话。
 - 每次续期前读取 CPA 配置文件，插件被关闭时删除对话。CPA 关闭插件后仍保留已加载的实例，不会通知插件。
 - `plugin.quiesce` 和 `plugin.shutdown` 停止所有计时器、清空对话，并关闭进行中的续期流。之后的 `plugin.reconfigure` 恢复运行。
+- 从管理页面停止对话时，删除该对话。进行中的续期照常完成，返回时因找不到对话而不再安排下一次。
 - 计时器回调运行在独立的 goroutine 中，未恢复的 panic 会使 CPA 进程退出，因此回调带 `recover`。
 
 ## 开发
@@ -90,7 +109,7 @@ go vet ./internal/...
 go test ./internal/...
 ```
 
-测试使用假的宿主和时钟，不发送真实请求，也不等待真实时间。覆盖内容：请求筛选和续期请求体、对话键、续期间隔和次数、新请求重新计时、缓存未命中和错误时停止、subagent 的删除（包括带 agent ID 的并行 subagent）、失败和中断请求的处理、插件关闭和 `max_pings: 0`、过期的续期结果、SSE 解析、日志正文、配置校验，以及插件 RPC 的注册和拦截请求解码。
+测试使用假的宿主和时钟，不发送真实请求，也不等待真实时间。覆盖内容：请求筛选和续期请求体、对话键、续期间隔和次数、新请求重新计时、缓存未命中和错误时停止、subagent 的删除（包括带 agent ID 的并行 subagent）、失败和中断请求的处理、插件关闭和 `max_pings: 0`、过期的续期结果、SSE 解析、日志正文、配置校验，手动停止对话，插件 RPC 的注册和拦截请求解码，以及管理接口和页面。
 
 ### 构建
 

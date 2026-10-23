@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wick</title>
+<style>/*CSS*/</style>
+</head>
+<body>
+<!-- Text marked with data-i18n comes from the dictionaries in page.js; the
+     Chinese text here is shown until the script applies the language. -->
+<div id="key-section" class="card" hidden>
+  <h2 class="card-title" data-i18n="key_title">需要管理密钥</h2>
+  <p class="secondary" data-i18n="key_hint">在管理中心登录时勾选“记住密码”，此页面会直接使用该密钥；否则请在这里输入，密钥只保存在当前标签页。</p>
+  <form id="key-form">
+    <input id="key-input" type="password" autocomplete="off" placeholder="CPA 管理密钥" data-i18n-placeholder="key_placeholder">
+    <button class="btn btn-primary" type="submit" data-i18n="key_submit">确定</button>
+  </form>
+  <p id="key-error" class="error-text" hidden></p>
+</div>
+
+<main id="app" hidden>
+  <header>
+    <h1><a class="home" href="https://github.com/PosvdM/cpa-plugin-wick" target="_blank" rel="noopener" title="在 GitHub 上查看" data-i18n-title="repo_hint">Wick</a><span class="sub" data-i18n="app_sub">灯芯</span></h1>
+    <span id="state" class="state"></span>
+    <span id="meta" class="meta"></span>
+  </header>
+
+  <div id="notices"></div>
+
+  <section class="card">
+    <h2 class="card-title" data-i18n="settings">设置</h2>
+    <p class="hint settings-note" data-i18n="save_hint">修改后自动保存到 CPA 的 config.yaml，插件几秒内应用。</p>
+    <form id="settings">
+      <div class="field">
+        <span class="field-label" data-i18n="duration">保活时长</span>
+        <div class="duration-row">
+          <div class="segmented" id="duration-buttons" role="group" aria-label="保活时长" data-i18n-aria-label="duration">
+            <button type="button" class="seg" data-value="0" aria-pressed="false" data-i18n="duration_off">关闭</button>
+            <button type="button" class="seg" data-value="2" aria-pressed="false" data-i18n="duration_15">15 分钟</button>
+            <button type="button" class="seg" data-value="6" aria-pressed="false" data-i18n="duration_30">30 分钟</button>
+            <button type="button" class="seg" data-value="12" aria-pressed="false" data-i18n="duration_60">1 小时</button>
+            <button type="button" class="seg" data-value="custom" aria-pressed="false" data-i18n="duration_custom">自定义</button>
+          </div>
+          <label id="custom-pings" class="inline-input" hidden><span data-i18n="max_pings">最多保活</span><input name="max_pings" type="number" min="0" max="1000" step="1"><span data-i18n="times">次</span></label>
+        </div>
+        <p id="duration-hint" class="hint"></p>
+      </div>
+      <details class="advanced">
+        <summary data-i18n="advanced">高级设置</summary>
+        <div class="grid-3">
+          <label><span data-i18n="interval_min">最短间隔（秒）</span><input name="interval_min" type="number" min="1" max="299" step="1"></label>
+          <label><span data-i18n="interval_max">最长间隔（秒）</span><input name="interval_max" type="number" min="1" max="299" step="1"></label>
+          <label><span data-i18n="min_body_kb">最小请求体（KiB）</span><input name="min_body_kb" type="number" min="0" step="1"></label>
+        </div>
+        <p class="hint" data-i18n="advanced_hint">每次保活的时刻在最短和最长间隔之间随机选取，最长间隔不超过 299 秒。请求体小于最小请求体的请求不保活，如生成标题等辅助请求。</p>
+      </details>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2 class="card-title"><span data-i18n="conversations">正在保活的对话</span><span id="conversation-count" class="count"></span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th data-i18n="col_session">会话</th><th data-i18n="col_model">模型</th><th data-i18n="col_account">账号</th><th class="num" data-i18n="col_context">缓存</th><th class="num" data-i18n="col_pings">已保活</th><th data-i18n="col_idle">空闲</th><th data-i18n="col_next">下次保活</th><th></th></tr>
+        </thead>
+        <tbody id="conversations"></tbody>
+      </table>
+    </div>
+    <p id="conversations-empty" class="empty" data-i18n="no_conversations" hidden>没有正在保活的对话。Claude Code 发出请求后，对话显示在这里。</p>
+  </section>
+
+  <section class="card">
+    <h2 class="card-title" data-i18n="events">保活记录</h2>
+    <p id="totals" class="totals"></p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th data-i18n="col_time">时间</th><th data-i18n="col_session">会话</th><th data-i18n="col_model">模型</th><th class="num" data-i18n="col_ping">次数</th><th class="num" data-i18n="col_read">缓存读取</th><th class="num" data-i18n="col_write">缓存写入</th><th data-i18n="col_result">结果</th></tr>
+        </thead>
+        <tbody id="events"></tbody>
+      </table>
+    </div>
+    <p id="events-empty" class="empty" data-i18n="no_events" hidden>还没有保活记录。</p>
+    <button id="events-more" class="btn btn-ghost btn-sm events-more" type="button" hidden></button>
+    <p class="hint" data-i18n="memory_hint">记录只保存在内存中，最多 100 条；CPA 重启或插件重新加载后清空。</p>
+  </section>
+</main>
+<div id="toast" class="toast" hidden></div>
+<script>/*JS*/</script>
+</body>
+</html>

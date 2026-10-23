@@ -11,6 +11,7 @@
 | `internal/keepalive` | Request filtering, conversation keys, refresh scheduling and SSE usage parsing |
 | `internal/host` | Host callback wrappers: streaming model execution, read, close and log |
 | `internal/config` | Parses `plugins.configs.wick` and reads the enabled flags from the CPA config |
+| `internal/web` | The management page. HTML, CSS and JavaScript are edited as separate files, embedded in the plugin and served as one document |
 
 ## CPA interface
 
@@ -35,6 +36,23 @@ Notes:
 - When CPA unloads the plugin, it rejects all of the plugin's host callbacks before calling `plugin.shutdown`, so a refresh stream in progress cannot be closed and stays open. `plugin.quiesce`, called when a hot update replaces the plugin, is not affected.
 - Refreshes count toward the account state like any request; a failure such as a 429 puts the account into cooldown.
 - CPA's log format prints only the fields it knows, such as `model`, and drops the other fields passed to `host.log`, so the plugin also writes them into the message.
+
+## Management API and page
+
+`management_api` registers the following routes and one page. The two `/v0/management/wick/` routes require the CPA management key; the page is a resource route that CPA serves without authentication, and it holds no data of its own, reading everything through the routes that need the key:
+
+| Route | Use |
+| --- | --- |
+| `GET /v0/management/wick/status` | Returns `Manager.Status()` plus the plugin version `version`, the enabled flag in the CPA config `enabled`, the config error `config_error` and the plugin clock `now` |
+| `POST /v0/management/wick/stop` | Takes `{"key": "<first 8 characters of the conversation key>"}`, stops refreshing that conversation and returns the new status; returns 404 when no conversation matches |
+| `GET /v0/resource/plugins/wick/page` | The management page, listed as Wick in the Management Center menu |
+
+How the page works:
+
+- The page runs in a same-origin iframe of the Management Center. It takes the management key from the Management Center's `localStorage` (`cli-proxy-auth`, XOR-obfuscated with a key derived from the host and User-Agent); without one it asks the user and keeps the key in `sessionStorage` only. The theme and language come from the `data-theme` and `lang` attributes of the parent page's root element, or from the Management Center settings in `localStorage` when the page is opened on its own. This part matches Lamplighter's management page.
+- Settings are read and written through CPA's `GET` / `PATCH /v0/management/plugins/wick/config`. CPA shallow-merges the top-level keys, writes `config.yaml`, then hot-reloads and calls `plugin.reconfigure`. CPA does not validate plugin config, so the page checks the interval range and whole numbers before saving; with an invalid config the plugin uses the defaults and reports `config_error` in the status.
+- The duration presets and their `max_pings` values are in `PRESETS` in `page.js`. The estimated cache lifetime is `max_pings × (interval_min + interval_max) / 2 + 300` seconds, shown in whole minutes rounded down.
+- The page refreshes the status every 5 seconds and pauses while the tab is hidden. Idle times and countdowns update locally every second, corrected for the offset from the plugin clock using `now` in the status.
 
 ## Refresh request
 
@@ -74,6 +92,7 @@ At most 32 conversations are kept in memory; beyond that, the one with the oldes
 - Setting `max_pings` to 0 clears all conversations.
 - Before each refresh the plugin reads the CPA config file and deletes the conversation if the plugin is disabled. CPA keeps a disabled plugin loaded without notifying it.
 - `plugin.quiesce` and `plugin.shutdown` stop all timers, clear the conversations and close refresh streams in progress. A later `plugin.reconfigure` resumes.
+- Stopping a conversation from the management page deletes it. A refresh in flight still finishes and, finding no conversation when it returns, schedules nothing.
 - Timer callbacks run on their own goroutines, where an unrecovered panic would exit the CPA process, so they use `recover`.
 
 ## Development
@@ -90,7 +109,7 @@ go vet ./internal/...
 go test ./internal/...
 ```
 
-The tests use a fake host and clock; they send no real requests and do not wait in real time. They cover the request filter and refresh body, conversation keys, refresh intervals and counts, rescheduling on a new request, stopping on a cache miss or error, removal of subagents (including parallel subagents with agent IDs), failed and interrupted requests, disabling the plugin and `max_pings: 0`, stale refresh results, SSE parsing, log messages, config validation, and plugin RPC registration and decoding of intercepted requests.
+The tests use a fake host and clock; they send no real requests and do not wait in real time. They cover the request filter and refresh body, conversation keys, refresh intervals and counts, rescheduling on a new request, stopping on a cache miss or error, removal of subagents (including parallel subagents with agent IDs), failed and interrupted requests, disabling the plugin and `max_pings: 0`, stale refresh results, SSE parsing, log messages, config validation, stopping a conversation by hand, plugin RPC registration and decoding of intercepted requests, and the management API and page.
 
 ### Build
 

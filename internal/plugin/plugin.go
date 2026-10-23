@@ -8,10 +8,13 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/PosvdM/cpa-plugin-wick/internal/config"
 	"github.com/PosvdM/cpa-plugin-wick/internal/host"
 	"github.com/PosvdM/cpa-plugin-wick/internal/keepalive"
+	"github.com/PosvdM/cpa-plugin-wick/internal/web"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -19,20 +22,28 @@ import (
 const (
 	repository = "https://github.com/PosvdM/cpa-plugin-wick"
 	apiBase    = "/v0/management/" + config.PluginID
+	// pagePath is the management page, served by CPA under
+	// /v0/resource/plugins/wick/.
+	pagePath = "/page"
 )
 
 // Plugin handles the RPC methods of one loaded plugin instance.
 type Plugin struct {
-	version string
-	host    host.Host
-	manager *keepalive.Manager
+	version        string
+	host           host.Host
+	manager        *keepalive.Manager
+	hostConfigPath string
+
+	mu          sync.Mutex
+	configError string
 }
 
 // New creates the plugin. hostConfigPath is the CPA config file.
 func New(h host.Host, version, hostConfigPath string) *Plugin {
 	return &Plugin{
-		version: version,
-		host:    h,
+		version:        version,
+		host:           h,
+		hostConfigPath: hostConfigPath,
 		manager: keepalive.New(keepalive.Options{
 			Host:    h,
 			Enabled: func() bool { return enabledInHostConfig(hostConfigPath) },
@@ -109,9 +120,14 @@ func (p *Plugin) handle(method string, request []byte) ([]byte, error) {
 			}
 		}
 		cfg, err := config.Parse(req.ConfigYAML)
+		configError := ""
 		if err != nil {
-			p.host.Log("warn", "wick: invalid config, using defaults: "+err.Error(), nil)
+			configError = err.Error()
+			p.host.Log("warn", "wick: invalid config, using defaults: "+configError, nil)
 		}
+		p.mu.Lock()
+		p.configError = configError
+		p.mu.Unlock()
 		p.manager.Configure(cfg)
 		return ok(p.registration())
 	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
@@ -184,11 +200,46 @@ type route struct {
 	Description string
 }
 
+type resource struct {
+	Path        string
+	Menu        string
+	Description string
+}
+
 func managementRegistration() map[string]any {
 	return map[string]any{
 		"routes": []route{
 			{Method: http.MethodGet, Path: apiBase + "/status", Description: "Wick keep-alive status"},
+			{Method: http.MethodPost, Path: apiBase + "/stop", Description: "Stop the keep-alive of one conversation"},
 		},
+		"resources": []resource{
+			{Path: pagePath, Menu: "Wick", Description: "提示缓存保活的状态和设置 / Prompt cache keep-alive status and settings"},
+		},
+	}
+}
+
+// status is the response of the status API: the keep-alive state plus what
+// the management page needs around it.
+type status struct {
+	Version string `json:"version"`
+	// Enabled is the enabled flag in the CPA config.
+	Enabled     bool   `json:"enabled"`
+	ConfigError string `json:"config_error,omitempty"`
+	// Now lets the page count down in the plugin's clock.
+	Now time.Time `json:"now"`
+	keepalive.Status
+}
+
+func (p *Plugin) status() status {
+	p.mu.Lock()
+	configError := p.configError
+	p.mu.Unlock()
+	return status{
+		Version:     p.version,
+		Enabled:     enabledInHostConfig(p.hostConfigPath),
+		ConfigError: configError,
+		Now:         time.Now(),
+		Status:      p.manager.Status(),
 	}
 }
 
@@ -207,8 +258,30 @@ func jsonResponse(status int, value any) pluginapi.ManagementResponse {
 
 func (p *Plugin) handleManagement(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	path := strings.TrimRight(req.Path, "/")
-	if strings.ToUpper(req.Method) == http.MethodGet && path == apiBase+"/status" {
-		return jsonResponse(http.StatusOK, p.manager.Status())
+	if strings.HasSuffix(path, "/"+config.PluginID+pagePath) && strings.Contains(path, "/v0/resource/plugins/") {
+		return pluginapi.ManagementResponse{
+			StatusCode: http.StatusOK,
+			Headers: http.Header{
+				"Content-Type":  []string{"text/html; charset=utf-8"},
+				"Cache-Control": []string{"no-store"},
+			},
+			Body: web.Page(),
+		}
+	}
+	switch strings.ToUpper(req.Method) + " " + path {
+	case "GET " + apiBase + "/status":
+		return jsonResponse(http.StatusOK, p.status())
+	case "POST " + apiBase + "/stop":
+		var body struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(req.Body, &body); err != nil || strings.TrimSpace(body.Key) == "" {
+			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "key is required"})
+		}
+		if !p.manager.StopConversation(strings.TrimSpace(body.Key)) {
+			return jsonResponse(http.StatusNotFound, map[string]string{"error": "conversation not found"})
+		}
+		return jsonResponse(http.StatusOK, p.status())
 	}
 	return jsonResponse(http.StatusNotFound, map[string]string{"error": fmt.Sprintf("unknown route %s %s", req.Method, req.Path)})
 }

@@ -8,7 +8,7 @@ Wick is a native plugin for [CLIProxyAPI](https://github.com/router-for-me/CLIPr
 
 Claude's prompt cache has two lifetimes: a 5-minute write costs 1.25× the input price and a 1-hour write costs 2×; a cache read costs 0.1×. Every read restarts the cache's timer. Native Claude Code uses the 5-minute cache by default, so after more than 5 minutes away, the next message writes the whole context again at 1.25×. With a context of a few hundred thousand tokens, that one rewrite uses a noticeable share of the quota.
 
-Wick keeps normal writes at the 5-minute price and, while a conversation is idle, reads the cache every 4 min 20 s to 4 min 50 s, up to 12 times in a row, which keeps the cache for about an hour.
+Wick keeps normal writes at the 5-minute price and, while a conversation is idle, reads the cache every 4 min 20 s to 4 min 50 s. By default it reads up to 6 times in a row, which keeps the cache for about 30 minutes; the duration can be chosen on the [management page](#management-page).
 
 ## How it works
 
@@ -44,18 +44,26 @@ CPA loads the plugin when it detects the config change; no restart is needed.
 
 ## Configuration
 
-Settings live under `plugins.configs.wick` in `config.yaml` and take effect when saved.
+Settings live under `plugins.configs.wick` in `config.yaml` and take effect when saved. They can also be changed on the [management page](#management-page).
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `interval_min` | `260` | Shortest refresh interval in seconds |
 | `interval_max` | `290` | Longest refresh interval in seconds, at most `299` |
-| `max_pings` | `12` | Refreshes per idle period; `0` turns refreshing off |
+| `max_pings` | `6` | Refreshes per idle period; `0` turns refreshing off |
 | `min_body_kb` | `64` | Skip requests whose body is smaller than this many KiB |
 
-The cache lifetime counts from when Anthropic receives the request, network latency included, so leave a margin between `interval_max` and 300 seconds. With an invalid config the plugin uses the defaults and writes a warning to the CPA log.
+Once a conversation is idle, the cache lasts about `max_pings` × the average interval + 5 minutes, about 32 minutes with the defaults. The cache lifetime counts from when Anthropic receives the request, network latency included, so leave a margin between `interval_max` and 300 seconds. With an invalid config the plugin uses the defaults and writes a warning to the CPA log.
 
-## Status
+## Management page
+
+Open **Wick** from the plugin menu of the CPA Management Center. The page uses the management key the Management Center remembered at sign-in, or asks for one; the theme and language follow the Management Center.
+
+- **Settings**: **Keep-alive duration** offers Off, 15 min, 30 min, 1 hour or Custom, which set `max_pings` to `0`, `2`, `6`, `12` or the number entered; below it the page shows the estimated cache lifetime for the current intervals. **Advanced** changes `interval_min`, `interval_max` and `min_body_kb`. Changes are saved to `config.yaml` and applied by the plugin within a few seconds.
+- **Conversations kept alive**: for each conversation, the first 8 characters of the session ID, the model, the account, the cache tokens read by the last refresh, the refresh count, the idle time and a countdown to the next refresh. **Stop** stops refreshing that conversation until it receives its next request.
+- **Ping history**: the time, cache tokens read and written, and result of the last 100 refreshes, plus totals since the plugin was loaded. The history is kept in memory only and is cleared when CPA restarts or reloads the plugin.
+
+## Logs and status API
 
 Each refresh writes one line to the CPA log with the first 8 characters of the session ID, the model, the refresh number, and the cache tokens read and written, for example:
 
