@@ -274,6 +274,63 @@ func TestNewRequestResetsSchedule(t *testing.T) {
 	}
 }
 
+func TestSubagentsUseTheirOwnLimit(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxPings, cfg.SubagentMaxPings = 6, 2
+	m, clock, h := newTestManager(cfg)
+	m.Observe(withAgent(intercept("r1", "sess", body("worker", "1")), "a1"))
+	if c := m.Status().Conversations[0]; c.MaxPings != 2 {
+		t.Fatalf("subagent limit %d, want 2", c.MaxPings)
+	}
+	clock.Advance(time.Hour)
+	if h.pings() != 2 || len(m.Status().Conversations) != 0 {
+		t.Fatalf("pings %d, want subagent_max_pings 2", h.pings())
+	}
+	// A time set on the page replaces the subagent limit.
+	m.Observe(withAgent(intercept("r2", "sess", body("worker", "2")), "a1"))
+	m.SetDuration(m.Status().Conversations[0].Key, 1)
+	clock.Advance(3 * 260 * time.Second)
+	if h.pings() != 5 || len(m.Status().Conversations) != 1 {
+		t.Fatalf("pings %d with a time set, want 3 more", h.pings())
+	}
+}
+
+func TestLoweredLimitSnuffsOut(t *testing.T) {
+	m, clock, h := newTestManager(testConfig())
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	m.Observe(intercept("r2", "sess", body("other", "1")))
+	clock.Advance(2 * 260 * time.Second)
+	m.SetDuration(m.Status().Conversations[1].Key, 1)
+	cfg := testConfig()
+	cfg.MaxPings = 2
+	m.Configure(cfg)
+	convs := m.Status().Conversations
+	if h.pings() != 4 || len(convs) != 1 || convs[0].Until == nil {
+		t.Fatalf("pings %d conversations %+v, want only the one with a time set", h.pings(), convs)
+	}
+}
+
+func TestSubagentMaxPingsZero(t *testing.T) {
+	m, clock, h := newTestManager(testConfig())
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	m.Observe(withAgent(intercept("r2", "sess", body("worker", "1")), "a1"))
+	cfg := testConfig()
+	cfg.SubagentMaxPings = 0
+	m.Configure(cfg)
+	convs := m.Status().Conversations
+	if len(convs) != 1 || convs[0].Agent {
+		t.Fatalf("conversations %+v, want the main one only", convs)
+	}
+	m.Observe(withAgent(intercept("r3", "sess", body("worker", "2")), "a2"))
+	if n := len(m.Status().Conversations); n != 1 {
+		t.Fatalf("conversations %d, a subagent was tracked", n)
+	}
+	clock.Advance(260 * time.Second)
+	if h.pings() != 1 {
+		t.Fatalf("pings %d, want the main conversation's", h.pings())
+	}
+}
+
 func TestCacheMissStops(t *testing.T) {
 	m, clock, h, rec := newRecordingManager(testConfig())
 	h.cacheCreation = 5000

@@ -296,7 +296,7 @@ func (m *Manager) restoreLocked() {
 	now := m.clock.Now()
 	expired := 0
 	for _, sc := range index.Conversations {
-		if _, ok := m.convs[sc.Key]; ok || m.cfg.MaxPings == 0 || len(m.convs) >= maxConversations || !keyPattern.MatchString(sc.Key) {
+		if _, ok := m.convs[sc.Key]; ok || len(m.convs) >= maxConversations || !keyPattern.MatchString(sc.Key) {
 			continue
 		}
 		earliest, latest := now.Add(restoreDelay), sc.LastRead.Add(cacheTTL-restoreMargin)
@@ -332,6 +332,10 @@ func (m *Manager) restoreLocked() {
 		}
 		if sc.Until != nil {
 			c.until, c.hours = *sc.Until, sc.Hours
+		}
+		// The limit may have been lowered while Wick was not running.
+		if m.doneLocked(c) {
+			continue
 		}
 		m.gen++
 		c.gen = m.gen

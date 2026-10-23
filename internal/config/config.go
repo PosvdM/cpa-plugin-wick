@@ -23,8 +23,12 @@ type Config struct {
 	// the start of the last request to a conversation and the next ping.
 	IntervalMin int `yaml:"interval_min" json:"interval_min"`
 	IntervalMax int `yaml:"interval_max" json:"interval_max"`
-	// MaxPings is the number of pings sent during one idle period.
+	// MaxPings is the number of pings sent during one idle period. 0 turns
+	// Wick off, subagents included.
 	MaxPings int `yaml:"max_pings" json:"max_pings"`
+	// SubagentMaxPings replaces MaxPings for subagents. 0 leaves subagents
+	// out.
+	SubagentMaxPings int `yaml:"subagent_max_pings" json:"subagent_max_pings"`
 	// MinBodyKB skips requests whose body is smaller than this many KiB.
 	MinBodyKB int `yaml:"min_body_kb" json:"min_body_kb"`
 	// HistoryRetentionDays is how many days of ping history are kept on disk.
@@ -36,7 +40,7 @@ type Config struct {
 
 // Default returns the default settings.
 func Default() Config {
-	return Config{IntervalMin: 260, IntervalMax: 290, MaxPings: 6, MinBodyKB: 64, HistoryRetentionDays: 40}
+	return Config{IntervalMin: 260, IntervalMax: 290, MaxPings: 6, SubagentMaxPings: 2, MinBodyKB: 64, HistoryRetentionDays: 40}
 }
 
 // Parse decodes the plugin config subtree. Missing keys keep their defaults.
@@ -61,6 +65,9 @@ func (c Config) validate() error {
 	}
 	if c.MaxPings < 0 {
 		return fmt.Errorf("max_pings must not be negative")
+	}
+	if c.SubagentMaxPings < 0 {
+		return fmt.Errorf("subagent_max_pings must not be negative")
 	}
 	if c.MinBodyKB < 0 {
 		return fmt.Errorf("min_body_kb must not be negative")

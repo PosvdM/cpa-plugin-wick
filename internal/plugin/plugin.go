@@ -197,6 +197,7 @@ func (p *Plugin) registration() registration {
 				field("interval_min", pluginapi.ConfigFieldTypeInteger, "最短挑灯间隔（秒） / Shortest interval between pings in seconds"),
 				field("interval_max", pluginapi.ConfigFieldTypeInteger, "最长挑灯间隔（秒），不超过 299 / Longest interval between pings in seconds, at most 299"),
 				field("max_pings", pluginapi.ConfigFieldTypeInteger, "一次空闲最多挑灯几次，0 为关闭 / Pings per idle period; 0 turns Wick off"),
+				field("subagent_max_pings", pluginapi.ConfigFieldTypeInteger, "子代理一次空闲最多挑灯几次，0 为不挑灯 / Pings per idle period for subagents; 0 leaves them out"),
 				field("min_body_kb", pluginapi.ConfigFieldTypeInteger, "请求体小于此大小（KiB）时不挑灯 / Skip requests whose body is smaller than this many KiB"),
 				field("history_retention_days", pluginapi.ConfigFieldTypeInteger, "挑灯记录保留天数 / Days of ping history to keep"),
 				field("data_dir", pluginapi.ConfigFieldTypeString, "数据目录，默认 <插件目录>/data/wick / Data directory, <plugins dir>/data/wick by default"),
@@ -254,7 +255,7 @@ func (p *Plugin) status() status {
 	p.mu.Lock()
 	configError := p.configError
 	p.mu.Unlock()
-	return status{
+	s := status{
 		Version:     p.version,
 		Enabled:     enabledInHostConfig(p.hostConfigPath),
 		ConfigError: configError,
@@ -262,6 +263,19 @@ func (p *Plugin) status() status {
 		Now:         time.Now(),
 		Status:      p.manager.Status(),
 	}
+	// The total of a conversation counts its pings in the whole history, so
+	// that it survives the conversation being snuffed out and seen again.
+	if len(s.Conversations) > 0 {
+		if totals, err := p.history.CountByKey(s.Now.AddDate(0, 0, -p.history.Retention()-1)); err == nil {
+			for i := range s.Conversations {
+				c := &s.Conversations[i]
+				// A ping in flight is counted in the round before it is
+				// written to the history.
+				c.TotalPings = max(totals[c.Key], c.Pings)
+			}
+		}
+	}
+	return s
 }
 
 func jsonResponse(status int, value any) pluginapi.ManagementResponse {
@@ -324,7 +338,7 @@ func (p *Plugin) handleManagement(req pluginapi.ManagementRequest) pluginapi.Man
 	return jsonResponse(http.StatusNotFound, map[string]string{"error": fmt.Sprintf("unknown route %s %s", req.Method, req.Path)})
 }
 
-// Limits on the number of events the history API returns.
+// Limits on the number of conversations the history API returns.
 const (
 	defaultHistoryLimit = 20
 	maxHistoryLimit     = 5000
@@ -334,14 +348,14 @@ type historyResponse struct {
 	Range  string         `json:"range"`
 	From   time.Time      `json:"from"`
 	Totals history.Totals `json:"totals"`
-	// Count is the number of events in the range; Events holds the newest
-	// limit of them, newest first.
-	Count  int               `json:"count"`
-	Events []keepalive.Event `json:"events"`
+	// Count is the number of conversations pinged in the range;
+	// Conversations holds the limit that were pinged last, newest first.
+	Count         int                    `json:"count"`
+	Conversations []history.Conversation `json:"conversations"`
 }
 
-// historyResponse answers GET /history?range=24h|7d|all&limit=N. "all"
-// covers the retention.
+// historyResponse answers GET /history?range=24h|7d|all&limit=N with the
+// pings summed by conversation. "all" covers the retention.
 func (p *Plugin) historyResponse(query url.Values) pluginapi.ManagementResponse {
 	now := time.Now()
 	rng := query.Get("range")
@@ -368,9 +382,10 @@ func (p *Plugin) historyResponse(query url.Values) pluginapi.ManagementResponse 
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
-	resp := historyResponse{Range: rng, From: from, Totals: history.Sum(events), Count: len(events), Events: []keepalive.Event{}}
-	for i := len(events) - 1; i >= 0 && len(resp.Events) < limit; i-- {
-		resp.Events = append(resp.Events, events[i])
+	convs := history.Group(events)
+	resp := historyResponse{Range: rng, From: from, Totals: history.Sum(events), Count: len(convs), Conversations: convs[:min(limit, len(convs))]}
+	if resp.Conversations == nil {
+		resp.Conversations = []history.Conversation{}
 	}
 	return jsonResponse(http.StatusOK, resp)
 }

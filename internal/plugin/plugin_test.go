@@ -83,6 +83,16 @@ func TestInterceptDecodesHostPayload(t *testing.T) {
 	if len(convs) != 1 || convs[0].Session != "session-1" || convs[0].AuthID != "claude-a.json" {
 		t.Fatalf("conversations %+v", convs)
 	}
+
+	// The total counts the conversation's pings in the history, including
+	// those of earlier rounds.
+	for range 3 {
+		p.history.Append(keepalive.Event{Time: time.Now().Add(-time.Hour), Key: convs[0].Key, Ping: 1})
+	}
+	p.history.Append(keepalive.Event{Time: time.Now(), Key: "other", Ping: 1})
+	if got := p.status().Conversations[0]; got.TotalPings != 3 || got.MaxPings != 6 {
+		t.Fatalf("total %d limit %d, want 3 and 6", got.TotalPings, got.MaxPings)
+	}
 }
 
 func manage(t *testing.T, p *Plugin, method, path, body string) pluginapi.ManagementResponse {
@@ -152,10 +162,10 @@ func TestHistoryRoute(t *testing.T) {
 	p := New(nopHost{}, "1.0.0", "missing.yaml", t.TempDir())
 	p.Handle("plugin.register", nil)
 	now := time.Now()
-	for i := range 3 {
-		p.history.Append(keepalive.Event{Time: now.Add(-time.Duration(i) * time.Hour), Ping: i + 1, Usage: &keepalive.Usage{CacheReadTokens: 10}})
+	for i, key := range []string{"a", "b", "a", "c"} {
+		p.history.Append(keepalive.Event{Time: now.Add(-time.Duration(i) * time.Hour), Key: key, Ping: 1, Usage: &keepalive.Usage{CacheReadTokens: 10}})
 	}
-	p.history.Append(keepalive.Event{Time: now.AddDate(0, 0, -3), Ping: 9})
+	p.history.Append(keepalive.Event{Time: now.AddDate(0, 0, -3), Key: "d", Ping: 9})
 	query := func(q url.Values) (int, historyResponse) {
 		payload, _ := json.Marshal(pluginapi.ManagementRequest{Method: "GET", Path: apiBase + "/history", Query: q})
 		var env struct{ Result pluginapi.ManagementResponse }
@@ -165,7 +175,8 @@ func TestHistoryRoute(t *testing.T) {
 		return env.Result.StatusCode, got
 	}
 	code, got := query(url.Values{"limit": {"2"}})
-	if code != http.StatusOK || got.Range != "24h" || got.Count != 3 || got.Totals.CacheReadTokens != 30 || len(got.Events) != 2 || got.Events[0].Ping != 1 {
+	if code != http.StatusOK || got.Range != "24h" || got.Count != 3 || got.Totals.Pings != 4 || got.Totals.CacheReadTokens != 40 ||
+		len(got.Conversations) != 2 || got.Conversations[0].Key != "a" || got.Conversations[0].Pings != 2 || got.Conversations[1].Key != "b" {
 		t.Fatalf("24h %d %+v", code, got)
 	}
 	if _, got := query(url.Values{"range": {"7d"}}); got.Count != 4 {

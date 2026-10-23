@@ -11,10 +11,10 @@ A ping in this document is one keep-alive request: the last request of a convers
 | `main.go` | cgo entry point; exports `cliproxy_plugin_init` and forwards calls between the C boundary and `plugin.Handle` |
 | `internal/plugin` | RPC dispatch: registration, interception, request completion, management API; hands the data directory to the two stores below |
 | `internal/keepalive` | Request filtering, conversation keys and descriptions, ping scheduling, SSE usage parsing, and saving and restoring the conversations kept lit |
-| `internal/history` | Ping history: daily JSON Lines files, range queries, deletion of old files |
+| `internal/history` | Ping history: daily JSON Lines files, range queries, sums by conversation, deletion of old files |
 | `internal/host` | Host callback wrappers: streaming model execution, read, close and log |
 | `internal/config` | Parses `plugins.configs.wick` and reads the enabled flags and the plugin directory from the CPA config |
-| `internal/web` | The management page. HTML, CSS and JavaScript are edited as separate files, embedded in the plugin and served as one document |
+| `internal/web` | The management page. HTML, CSS, JavaScript and the logo are edited as separate files, embedded in the plugin and served as one document |
 
 ## CPA interface
 
@@ -48,8 +48,8 @@ Notes:
 
 | Route | Use |
 | --- | --- |
-| `GET /v0/management/wick/status` | Returns `Manager.Status()` (the config, the conversations kept lit, and the time of the latest ping, `last_ping`) plus the plugin version `version`, the enabled flag in the CPA config `enabled`, the config error `config_error`, the data directory `data_dir` and the plugin clock `now`. A conversation's `session` is the full session ID and `key` the first 8 characters of the conversation key |
-| `GET /v0/management/wick/history` | `range` is `24h` (default), `7d` or `all` (everything within the retention), and `limit` is the number of entries returned (default 20, at most 5000). Returns the totals for the range `totals`, the number of entries `count`, and the newest `limit` entries `events`, newest first |
+| `GET /v0/management/wick/status` | Returns `Manager.Status()` (the config, the conversations kept lit, and the time of the latest ping, `last_ping`) plus the plugin version `version`, the enabled flag in the CPA config `enabled`, the config error `config_error`, the data directory `data_dir` and the plugin clock `now`. A conversation's `session` is the full session ID, `key` the first 8 characters of the conversation key, `pings` the pings of this round (since the last request), `max_pings` the conversation's limit per round, and `total_pings` the pings of the conversation key in the history within the retention, counted from the history by `plugin.status` (`Store.CountByKey`, without sorting); a ping in flight is not in the history yet, so the total is never below the count of the round |
+| `GET /v0/management/wick/history` | `range` is `24h` (default), `7d` or `all` (everything within the retention), and `limit` is the number of conversations returned (default 20, at most 5000). Returns the totals for the range `totals`, the number of conversations `count`, and the `limit` conversations pinged last, `conversations`, newest first. Each is a `history.Conversation`: the times of the first and last ping, the ping count, the counts of hits, misses and failures, the cache read and written in total, the context size of the last ping `context`, and the error and stop reason of the last ping, with the description taken from the last ping |
 | `POST /v0/management/wick/duration` | Takes `{"key": "<first 8 characters of the conversation key>", "hours": <hours>}` with `hours` from 0 to 24, where 0 returns to the default time. Returns the new status; returns 404 when no conversation matches |
 | `POST /v0/management/wick/stop` | Takes `{"key": "<first 8 characters of the conversation key>"}`, snuffs out that conversation and returns the new status; returns 404 when no conversation matches |
 | `GET /v0/resource/plugins/wick/page` | The management page, listed as Wick in the Management Center menu |
@@ -58,11 +58,14 @@ How the page works:
 
 - The page runs in a same-origin iframe of the Management Center. It takes the management key from the Management Center's `localStorage` (`cli-proxy-auth`, XOR-obfuscated with a key derived from the host and User-Agent); without one it asks the user and keeps the key in `sessionStorage` only. The theme and language come from the `data-theme` and `lang` attributes of the parent page's root element, or from the Management Center settings in `localStorage` when the page is opened on its own. This part matches Lamplighter's management page.
 - Settings are read and written through CPA's `GET` / `PATCH /v0/management/plugins/wick/config`. CPA shallow-merges the top-level keys, writes `config.yaml`, then hot-reloads and calls `plugin.reconfigure`. CPA does not validate plugin config, so the page checks the interval range, the retention and whole numbers before saving; with an invalid config the plugin uses the defaults and reports `config_error` in the status.
-- The default duration presets and their `max_pings` values are in `PRESETS` in `page.js`, and the per-conversation presets in `DURATION_PRESETS`. The estimated cache lifetime is `max_pings × (interval_min + interval_max) / 2 + 300` seconds, shown in whole minutes rounded down.
+- The default time and the subagent time share the presets `PRESETS` in `page.js`, for `max_pings` and `subagent_max_pings`; the elements of both rows are in `DURATIONS`, and the per-conversation presets in `DURATION_PRESETS`. The estimated cache lifetime is `pings × (interval_min + interval_max) / 2 + 300` seconds, shown in whole minutes rounded down.
 - The page refreshes the status every 5 seconds and pauses while the tab is hidden. Idle times and countdowns update locally every second, corrected for the offset from the plugin clock using `now` in the status. The history is reloaded only when `last_ping` in the status changes.
 - While the user is typing in the custom duration field, or has touched a conversation's duration menu in the last 15 seconds, a refresh does not rebuild the conversation table, which would close the menu. Arrow keys on a closed menu fire `change` at every step, so a change made with the keyboard is committed on Enter or when the menu loses focus.
 - A conversation is shown by its client and first prompt; the full first prompt, project directory, session ID and conversation key are in the tooltip. The entrypoint-to-client names are in `CLIENTS` in `page.js`; entrypoints not listed are shown as sent.
 - The idle time and the countdown are both shown as `m:ss`, or `h:mm:ss` from an hour on.
+- The context size is the whole input of a ping: the sum of `cache_read_input_tokens`, `cache_creation_input_tokens` and `input_tokens`. The conversations kept lit use `last_usage` from the status, the history uses `context`.
+- In the history, a conversation whose key is among the conversations kept lit in the status shows "Still lit" in place of the stop reason of its last ping.
+- The icon next to the title is `internal/web/logo.png` (64 px), inlined in the page as a data URI. The repository is private, so the page cannot load the repository's files from GitHub.
 
 ## Ping request
 
@@ -105,9 +108,11 @@ The description on the page is taken when the request is recorded (`describe.go`
 
 - When a conversation receives a request, the ping is scheduled at a uniformly random moment between `interval_min` and `interval_max` seconds after the request started. The cache timer starts when the upstream receives the request, so the starting point is the request start, not the end of the response; with a long response, the first ping may go out before the response finishes.
 - After each successful ping, the next one is scheduled the same way from the start of that ping.
-- By default a conversation is snuffed out after its `max_pings`th ping. A conversation with a time set uses a deadline `until` (the moment it was set plus the hours) instead: it is snuffed out when 300 seconds (the cache lifetime) after the start of a ping is not earlier than `until`, so the cache lasts at least until `until`. A new request clears `until`; returning to the default time on the page snuffs the conversation out at once if it has already reached `max_pings`.
+- The count of a round restarts with every new request. `limitLocked` decides the limit per round: `subagent_max_pings` for subagents, which carry an agent ID, and `max_pings` for the rest; with `max_pings` at 0 subagents are not pinged either. The limit is checked against the current config when a ping returns. After a config change, conversations whose round has reached the new limit and that have no time set are snuffed out at once; restoring saved conversations skips them too.
+- The manager keeps no total: a conversation is deleted when it is snuffed out and is new when seen again, so the status route counts the total from the history, which neither snuffing out nor a restart loses.
+- By default a conversation is snuffed out when a round reaches its limit. A conversation with a time set uses a deadline `until` (the moment it was set plus the hours) instead: it is snuffed out when 300 seconds (the cache lifetime) after the start of a ping is not earlier than `until`, so the cache lasts at least until `until`. A new request clears `until`; returning to the default time on the page snuffs the conversation out at once if its round has already reached the limit.
 - Every schedule takes a generation (`gen`) from a counter shared by the whole manager. The timer callback and the ping result both check it, so stale timers and results do not affect the new schedule, and a ping still in flight cannot match a conversation that was deleted and then seen again.
-- Setting `max_pings` to 0 clears all conversations.
+- A limit of 0 works the same way: setting `max_pings` to 0 clears all conversations, and setting `subagent_max_pings` to 0 deletes all subagents. Requests whose limit is 0 are not recorded.
 - Before each ping the plugin reads the CPA config file and deletes the conversation if the plugin is disabled. CPA v8.0.39 unloads a disabled plugin (the same as `plugin.shutdown`, below); the check covers the gap before unloading and CPA versions that keep the instance.
 - `plugin.quiesce` and `plugin.shutdown` save the conversations, then stop all timers, clear the conversations in memory and close ping streams in progress; the next instance restores what was saved. A later `plugin.reconfigure` resumes and restores the conversations from disk again. Re-enabling a disabled plugin before the cache expires also restores the saved conversations.
 - Snuffing out a conversation from the management page deletes it. A ping in flight still finishes and, finding no conversation when it returns, schedules nothing.
@@ -121,7 +126,7 @@ The data directory is the `data_dir` setting, or `<plugins.dir>/data/wick` when 
 
 `internal/keepalive/persist.go` saves the conversations in memory under `conversations/`:
 
-- `index.json`: for each conversation, the key, first-seen time, last request time, the last time the cache was read `last_read`, next ping time, ping count, `until` and the hours, and the last usage.
+- `index.json`: for each conversation, the key, first-seen time, last request time, the last time the cache was read `last_read`, next ping time, the ping count of this round, `until` and the hours, and the last usage.
 - `<conversation key>.req`: the first line is the request metadata (session ID, agent ID, model, account, request ID, directory, first prompt, headers) as JSON, followed by the request body unchanged. The body is not JSON-encoded, so the replay matches the original request byte for byte.
 
 When a conversation changes (new request, ping, duration set, removal), the manager signals a background goroutine, which waits 5 seconds to batch the changes, takes a snapshot under the lock and writes the files outside it. A request file is rewritten only when its conversation's generation changes; other changes rewrite only `index.json`. Files are written to `.tmp` and renamed; files not in the snapshot are deleted; a conversation key must be 64 hexadecimal characters or it is not read.
@@ -132,11 +137,13 @@ After `plugin.register` or `plugin.reconfigure` sets the directory, the manager 
 
 - The next ping is no earlier than 3 seconds after loading, which leaves CPA time to finish loading the plugin, and no later than 290 seconds after `last_read` (the cache lifetime less 10 seconds for the request to reach upstream); with `interval_max` above 290 the saved time can be later.
 - If 3 seconds after loading is already later than 290 seconds after `last_read`, the cache counts as expired and the conversation is not restored; its files are deleted on the next write.
-- A restored conversation takes a new generation and keeps its count, `until` and last request time.
+- A restored conversation takes a new generation and keeps its count, `until` and the last request time.
 
 ### Ping history
 
 `internal/history` appends the `keepalive.Event` of every ping to `history/<UTC date>.jsonl`, one JSON object per line, each written whole with one `O_APPEND` write, so two instances overlapping briefly during a hot update cannot corrupt a file. The first write of each day deletes files older than `history_retention_days` days. Queries read the files day by day and cache the parsed result by file size and modification time, so unchanged files are not parsed again.
+
+The history route passes the query result to `history.Group`, which sums it by conversation key (the first 8 characters), so a conversation appears once per range. The file format is unchanged, one line per ping; entries without a conversation key are summed by session ID.
 
 ## Development
 
@@ -152,7 +159,7 @@ go vet ./internal/...
 go test ./internal/...
 ```
 
-The tests use a fake host and clock; they send no real requests and do not wait in real time. The persistence tests call the write function directly in a temp directory instead of waiting for the background goroutine. They cover the request filter and ping body (including removal of the client credentials), conversation keys, extraction of the project directory and first prompt, ping intervals and counts, rescheduling on a new request, snuffing out on a cache miss or error, removal of subagents (including parallel subagents with agent IDs), failed and interrupted requests, disabling the plugin and `max_pings: 0`, stale ping results, the deadline and clearing of a time set for a conversation, sparing such conversations on eviction, saving and restoring conversations (schedule kept, overdue ping sent soon, late ping brought forward, expired cache not restored, the last state before stopping, files deleted), writing, querying and pruning the ping history, SSE parsing, log messages, config validation and the data directory, snuffing out a conversation by hand, plugin RPC registration and decoding of intercepted requests, and the management API and page.
+The tests use a fake host and clock; they send no real requests and do not wait in real time. The persistence tests call the write function directly in a temp directory instead of waiting for the background goroutine. They cover the request filter and ping body (including removal of the client credentials), conversation keys, extraction of the project directory and first prompt, ping intervals and counts, the subagent limit (including a time set and `subagent_max_pings: 0`), the total counted from the history, rescheduling on a new request, snuffing out on a cache miss or error, removal of subagents (including parallel subagents with agent IDs), failed and interrupted requests, disabling the plugin and `max_pings: 0`, stale ping results, the deadline and clearing of a time set for a conversation, sparing such conversations on eviction, saving and restoring conversations (schedule kept, overdue ping sent soon, late ping brought forward, expired cache not restored, the last state before stopping, files deleted), writing, querying, summing by conversation and pruning the ping history, SSE parsing, log messages, config validation and the data directory, snuffing out a conversation by hand, plugin RPC registration and decoding of intercepted requests, and the management API and page.
 
 ### Build
 
@@ -174,4 +181,5 @@ Pushing a `v*` tag makes GitHub Actions (`.github/workflows/build.yml`) run the 
 - When changing how the ping request is built, check CPA's `internal/runtime/executor/claude_executor*.go` to confirm that what goes upstream still matches the original request.
 - When changing the fields of `conversation` or `request`, update the fields saved and restored in `persist.go`.
 - New goroutines must use `recover`.
+- When replacing `assets/logo.png`, also generate the 64 px `internal/web/logo.png`; the page shows the new icon only after a release.
 - User-visible behavior, configuration and limits go in the README (Chinese and English); implementation details go in this document (Chinese and English).

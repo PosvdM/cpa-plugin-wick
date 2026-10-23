@@ -128,6 +128,30 @@ func (s *Store) Query(from time.Time) ([]keepalive.Event, error) {
 	return out, nil
 }
 
+// CountByKey counts the events from from to now by conversation key. The
+// status polls it every few seconds, so it skips the sorting of Query.
+func (s *Store) CountByKey(from time.Time) (map[string]int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dir == "" {
+		return nil, errors.New("history directory not set")
+	}
+	now := s.now()
+	counts := make(map[string]int)
+	for day := from.UTC().Truncate(24 * time.Hour); !day.After(now); day = day.Add(24 * time.Hour) {
+		events, err := s.readDayLocked(s.fileFor(day))
+		if err != nil {
+			return nil, err
+		}
+		for _, ev := range events {
+			if ev.Key != "" && !ev.Time.Before(from) {
+				counts[ev.Key]++
+			}
+		}
+	}
+	return counts, nil
+}
+
 func (s *Store) readDayLocked(path string) ([]keepalive.Event, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -205,4 +229,67 @@ func Sum(events []keepalive.Event) Totals {
 		}
 	}
 	return t
+}
+
+// Conversation sums the pings of one conversation in a range.
+type Conversation struct {
+	Key     string `json:"key"`
+	Session string `json:"session"`
+	// Model, Agent, Client, Cwd and Prompt are those of the latest ping.
+	Model  string    `json:"model"`
+	Agent  bool      `json:"agent,omitempty"`
+	Client string    `json:"client,omitempty"`
+	Cwd    string    `json:"cwd,omitempty"`
+	Prompt string    `json:"prompt,omitempty"`
+	First  time.Time `json:"first"`
+	Last   time.Time `json:"last"`
+	Totals
+	// Hits and Misses count the pings that read or wrote the cache.
+	Hits   int `json:"hits"`
+	Misses int `json:"misses"`
+	// Context is the input of the latest ping that reported usage: cached,
+	// written and uncached tokens.
+	Context int64 `json:"context"`
+	// LastError and LastStopped are those of the latest ping.
+	LastError   string `json:"last_error,omitempty"`
+	LastStopped string `json:"last_stopped,omitempty"`
+}
+
+// Group sums events, oldest first, by conversation, newest conversation
+// first. Events without a conversation key, written before keys were
+// recorded, are grouped by session.
+func Group(events []keepalive.Event) []Conversation {
+	index := make(map[string]int)
+	var out []Conversation
+	for _, ev := range events {
+		id := ev.Key
+		if id == "" {
+			id = "session:" + ev.Session
+		}
+		i, ok := index[id]
+		if !ok {
+			i = len(out)
+			index[id] = i
+			out = append(out, Conversation{Key: ev.Key, Session: ev.Session, First: ev.Time})
+		}
+		c := &out[i]
+		c.Model, c.Agent, c.Client, c.Cwd, c.Prompt = ev.Model, ev.Agent, ev.Client, ev.Cwd, ev.Prompt
+		c.Last, c.LastError, c.LastStopped = ev.Time, ev.Error, ev.Stopped
+		c.Pings++
+		switch {
+		case ev.Error != "":
+			c.Failed++
+		case ev.Usage != nil && ev.Usage.CacheCreationTokens > 0:
+			c.Misses++
+		default:
+			c.Hits++
+		}
+		if ev.Usage != nil {
+			c.CacheReadTokens += ev.Usage.CacheReadTokens
+			c.CacheCreationTokens += ev.Usage.CacheCreationTokens
+			c.Context = ev.Usage.CacheReadTokens + ev.Usage.CacheCreationTokens + ev.Usage.InputTokens
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Last.After(out[j].Last) })
+	return out
 }

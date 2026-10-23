@@ -21,6 +21,7 @@
 
 <main id="app" hidden>
   <header>
+    <img class="logo" src="data:image/png;base64,/*LOGO*/" alt="" width="30" height="30">
     <h1><a class="home" href="https://github.com/PosvdM/cpa-plugin-wick" target="_blank" rel="noopener" title="在 GitHub 上查看" data-i18n-title="repo_hint">Wick</a><span class="sub" data-i18n="app_sub">挑灯</span></h1>
     <span id="state" class="state"></span>
     <span id="meta" class="meta"></span>
@@ -46,6 +47,20 @@
         </div>
         <p id="duration-hint" class="hint"></p>
       </div>
+      <div class="field">
+        <span class="field-label" data-i18n="subagent_duration">子代理挑灯时长</span>
+        <div class="duration-row">
+          <div class="segmented" id="subagent-buttons" role="group" aria-label="子代理挑灯时长" data-i18n-aria-label="subagent_duration">
+            <button type="button" class="seg" data-value="0" aria-pressed="false" data-i18n="duration_off">关闭</button>
+            <button type="button" class="seg" data-value="2" aria-pressed="false" data-i18n="duration_15">15 分钟</button>
+            <button type="button" class="seg" data-value="6" aria-pressed="false" data-i18n="duration_30">30 分钟</button>
+            <button type="button" class="seg" data-value="12" aria-pressed="false" data-i18n="duration_60">1 小时</button>
+            <button type="button" class="seg" data-value="custom" aria-pressed="false" data-i18n="duration_custom">自定义</button>
+          </div>
+          <label id="custom-subagent-pings" class="inline-input" hidden><span data-i18n="max_pings">最多挑灯</span><input name="subagent_max_pings" type="number" min="0" max="1000" step="1"><span data-i18n="times">次</span></label>
+        </div>
+        <p id="subagent-hint" class="hint"></p>
+      </div>
       <details class="advanced">
         <summary><span data-i18n="advanced">高级设置</span><span class="summary-note" data-i18n="advanced_scope">对所有对话生效</span></summary>
         <div class="grid-4">
@@ -64,7 +79,7 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th data-i18n="col_conversation">对话</th><th data-i18n="col_model_account">模型 / 账号</th><th class="num" data-i18n="col_context">缓存</th><th class="num" data-i18n="col_pings">已挑灯</th><th data-i18n="col_idle">空闲</th><th data-i18n="col_next">下次挑灯</th><th data-i18n="col_duration">时长</th><th></th></tr>
+          <tr><th data-i18n="col_conversation">对话</th><th data-i18n="col_model_account">模型 / 账号</th><th class="num" data-i18n="col_context">上下文</th><th class="num" data-i18n="col_pings">已挑灯</th><th data-i18n="col_idle">空闲</th><th data-i18n="col_next">下次挑灯</th><th data-i18n="col_duration">时长</th><th></th></tr>
         </thead>
         <tbody id="conversations"></tbody>
       </table>
@@ -85,7 +100,7 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th data-i18n="col_time">时间</th><th data-i18n="col_conversation">对话</th><th data-i18n="col_model">模型</th><th class="num" data-i18n="col_ping">次数</th><th class="num" data-i18n="col_read">缓存读取</th><th class="num" data-i18n="col_write">缓存写入</th><th data-i18n="col_result">结果</th></tr>
+          <tr><th data-i18n="col_time">最后挑灯</th><th data-i18n="col_conversation">对话</th><th data-i18n="col_model">模型</th><th class="num" data-i18n="col_ping">次数</th><th class="num" data-i18n="col_context">上下文</th><th class="num" data-i18n="col_read">缓存读取</th><th class="num" data-i18n="col_write">缓存写入</th><th data-i18n="col_result">结果</th></tr>
         </thead>
         <tbody id="events"></tbody>
       </table>

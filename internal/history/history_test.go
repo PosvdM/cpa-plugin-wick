@@ -41,6 +41,9 @@ func TestAppendAndQuery(t *testing.T) {
 	if sum := Sum(got); sum.Pings != 2 || sum.Failed != 1 || sum.CacheReadTokens != 100 {
 		t.Fatalf("totals %+v", sum)
 	}
+	if counts, err := s.CountByKey(now.Add(-48 * time.Hour)); err != nil || counts["old"] != 1 || counts["a"] != 1 || counts["b"] != 1 {
+		t.Fatalf("counts %v err %v", counts, err)
+	}
 	// A cached day file is read again after it changes.
 	s.Append(keepalive.Event{Time: now.Add(-time.Minute), Key: "c"})
 	if got, _ := s.Query(now.Add(-24 * time.Hour)); len(got) != 3 {
@@ -62,5 +65,28 @@ func TestPruneDeletesOldDays(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "2026-09-20.jsonl")); err != nil {
 		t.Fatal("file within 40 days deleted")
+	}
+}
+
+func TestGroup(t *testing.T) {
+	now := time.Date(2026, 10, 24, 1, 0, 0, 0, time.UTC)
+	events := []keepalive.Event{
+		{Time: now, Key: "a", Session: "s", Model: "m1", Ping: 1, Usage: &keepalive.Usage{CacheReadTokens: 100, InputTokens: 2}},
+		{Time: now.Add(time.Minute), Key: "b", Session: "s", Ping: 1, Error: "boom", Stopped: "error"},
+		{Time: now.Add(5 * time.Minute), Key: "a", Session: "s", Model: "m2", Ping: 2, Usage: &keepalive.Usage{CacheReadTokens: 120, InputTokens: 3}},
+		{Time: now.Add(9 * time.Minute), Key: "a", Session: "s", Model: "m2", Ping: 1, Usage: &keepalive.Usage{CacheReadTokens: 10, CacheCreationTokens: 130, InputTokens: 1}, Stopped: "cache_miss"},
+		{Time: now.Add(2 * time.Minute), Session: "old"},
+	}
+	got := Group(events)
+	if len(got) != 3 || got[0].Key != "a" || got[1].Session != "old" || got[2].Key != "b" {
+		t.Fatalf("groups %+v", got)
+	}
+	a := got[0]
+	if a.Pings != 3 || a.Hits != 2 || a.Misses != 1 || a.Failed != 0 || a.CacheReadTokens != 230 || a.CacheCreationTokens != 130 ||
+		a.Context != 141 || a.Model != "m2" || !a.First.Equal(now) || !a.Last.Equal(now.Add(9*time.Minute)) || a.LastStopped != "cache_miss" {
+		t.Fatalf("conversation a %+v", a)
+	}
+	if b := got[2]; b.Failed != 1 || b.LastError != "boom" || b.Context != 0 {
+		t.Fatalf("conversation b %+v", b)
 	}
 }

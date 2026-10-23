@@ -168,17 +168,38 @@ func New(opts Options) *Manager {
 }
 
 // Configure applies cfg to new schedules and resumes a stopped manager.
-// max_pings 0 also cancels the schedules already set.
+// Conversations that have reached their new limit are snuffed out.
 func (m *Manager) Configure(cfg config.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cfg = cfg
 	m.stopped = false
-	if cfg.MaxPings == 0 {
-		for key := range m.convs {
+	for key, c := range m.convs {
+		if m.doneLocked(c) {
 			m.removeLocked(key)
+			m.logLocked("info", "limit lowered, keep-alive stopped", c.req, c.pings, stopMaxPings)
 		}
 	}
+}
+
+// doneLocked reports whether c has used up its pings: its limit is 0, or it
+// has no time set and has reached its limit.
+func (m *Manager) doneLocked(c *conversation) bool {
+	limit := m.limitLocked(c.req)
+	return limit == 0 || (c.until.IsZero() && c.pings >= limit)
+}
+
+// limitLocked returns the pings per idle period of req's conversation:
+// subagent_max_pings for subagents, max_pings otherwise. max_pings 0 turns
+// Wick off, subagents included.
+func (m *Manager) limitLocked(req request) int {
+	if m.cfg.MaxPings == 0 {
+		return 0
+	}
+	if req.Agent != "" {
+		return m.cfg.SubagentMaxPings
+	}
+	return m.cfg.MaxPings
 }
 
 // SetStore saves the conversations under dir from now on. The first call
@@ -260,7 +281,7 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) {
 	now := m.clock.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.stopped || m.cfg.MaxPings == 0 {
+	if m.stopped || m.limitLocked(req) == 0 {
 		return
 	}
 	c, ok := m.convs[req.Key]
@@ -314,9 +335,9 @@ func (m *Manager) Complete(done pluginapi.RequestCompletion) {
 }
 
 // SetDuration keeps the conversation whose short key is key alive for hours
-// from now, in place of max_pings, until the conversation's next request.
-// hours 0 returns it to max_pings. It reports whether a conversation was
-// found.
+// from now, in place of its limit of pings, until the conversation's next
+// request. hours 0 returns it to the limit. It reports whether a
+// conversation was found.
 func (m *Manager) SetDuration(key string, hours float64) bool {
 	if !(hours >= 0 && hours <= MaxDurationHours) {
 		return false
@@ -335,7 +356,7 @@ func (m *Manager) SetDuration(key string, hours float64) bool {
 			m.logLocked("info", fmt.Sprintf("kept lit for %g h from the management page", hours), c.req, c.pings, "")
 		} else {
 			c.until, c.hours = time.Time{}, 0
-			if c.pings >= m.cfg.MaxPings {
+			if c.pings >= m.limitLocked(c.req) {
 				m.removeLocked(full)
 				m.logLocked("info", "duration reset from the management page", c.req, c.pings, stopMaxPings)
 			}
@@ -507,7 +528,7 @@ func (m *Manager) finishPing(key string, gen uint64, req request, n int, start t
 			case !current.until.IsZero() && !start.Add(cacheTTL).Before(current.until):
 				event.Stopped = stopUntil
 				m.removeLocked(key)
-			case current.until.IsZero() && n >= m.cfg.MaxPings:
+			case current.until.IsZero() && n >= m.limitLocked(req):
 				event.Stopped = stopMaxPings
 				m.removeLocked(key)
 			default:
@@ -623,9 +644,14 @@ type ConversationStatus struct {
 	FirstSeen   time.Time `json:"first_seen"`
 	LastRequest time.Time `json:"last_request"`
 	NextPing    time.Time `json:"next_ping"`
-	Pings       int       `json:"pings"`
-	BodyBytes   int       `json:"body_bytes"`
-	LastUsage   *Usage    `json:"last_usage,omitempty"`
+	// Pings counts the pings since the last request, up to MaxPings, the
+	// limit of the conversation. TotalPings is filled in by the plugin from
+	// the history.
+	Pings      int    `json:"pings"`
+	MaxPings   int    `json:"max_pings"`
+	TotalPings int    `json:"total_pings"`
+	BodyBytes  int    `json:"body_bytes"`
+	LastUsage  *Usage `json:"last_usage,omitempty"`
 	// Until and Hours are set when the management page set a duration for
 	// the conversation.
 	Until *time.Time `json:"until,omitempty"`
@@ -663,6 +689,7 @@ func (m *Manager) Status() Status {
 			LastRequest: c.lastRequest,
 			NextPing:    c.nextPing,
 			Pings:       c.pings,
+			MaxPings:    m.limitLocked(c.req),
 			BodyBytes:   len(c.req.Body),
 			LastUsage:   c.lastUsage,
 		}

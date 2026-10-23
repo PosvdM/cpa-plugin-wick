@@ -16,7 +16,6 @@
   var rawConfig = {};
   // The plugin's clock minus the browser's, so countdowns match the plugin.
   var clockOffset = 0;
-  var customMode = false;
   var historyRange = "24h";
   var historyLimit = EVENTS_SHOWN;
   var historyData = null;
@@ -104,6 +103,9 @@
       max_pings: "最多挑灯", times: "次",
       duration_hint: "对话空闲后每隔 {0}到 {1}挑灯一次，最多 {2} 次，缓存约保持 {3} 分钟。单个对话可在下方另设时长。",
       duration_hint_off: "挑灯已关闭，对话空闲 5 分钟后缓存过期。",
+      subagent_duration: "子代理挑灯时长",
+      subagent_hint: "子代理空闲后最多挑灯 {0} 次，缓存约保持 {1} 分钟。主对话收到下一个请求时，子代理随之熄灭。",
+      subagent_hint_off: "子代理不挑灯。", subagent_hint_wick_off: "默认挑灯时长为“关闭”时，子代理也不挑灯。",
       advanced: "高级设置", advanced_scope: "对所有对话生效",
       interval_min: "最短间隔（秒）", interval_max: "最长间隔（秒）", min_body_kb: "最小请求体（KiB）", history_retention_days: "记录保留（天）",
       advanced_hint: "每次挑灯的时刻在最短和最长间隔之间随机选取，最长间隔不超过 299 秒。请求体小于最小请求体的请求不挑灯，如生成标题等辅助请求。",
@@ -112,12 +114,13 @@
       retention_invalid: "记录保留天数须在 1 到 3650 之间",
       saved: "已保存", save_failed: "保存失败：{0}", load_failed: "加载失败：{0}",
       conversations: "正在挑灯的对话",
-      col_conversation: "对话", col_model: "模型", col_model_account: "模型 / 账号", col_context: "缓存", col_pings: "已挑灯",
+      col_conversation: "对话", col_model: "模型", col_model_account: "模型 / 账号", col_context: "上下文", col_pings: "已挑灯",
       col_idle: "空闲", col_next: "下次挑灯", col_duration: "时长",
       no_conversations: "没有正在挑灯的对话。Claude Code 发出请求后，对话显示在这里。",
       subagent: "子代理", no_prompt: "（没有文字）",
       session_hint: "会话 {0}", key_hint_short: "对话键 {0}", directory_hint: "目录 {0}",
       context_pending: "首次挑灯后显示",
+      pings_round: "本轮 {0} / {1}", pings_total_hint: "共挑灯 {0} 次，本轮 {1} 次。对话收到新请求后开始新的一轮。",
       pinging: "挑灯中",
       duration_default: "默认", duration_hours: "{0} 小时", duration_custom_option: "自定义…",
       duration_until: "到 {0}", duration_input: "小时数",
@@ -128,15 +131,16 @@
       totals_24h: "近 24 小时共挑灯 {0} 次，失败 {1} 次，读取缓存 {2} token，写入缓存 {3} token。",
       totals_7d: "近 7 天共挑灯 {0} 次，失败 {1} 次，读取缓存 {2} token，写入缓存 {3} token。",
       totals_all: "保留的 {4} 天内共挑灯 {0} 次，失败 {1} 次，读取缓存 {2} token，写入缓存 {3} token。",
-      col_time: "时间", col_ping: "次数", col_read: "缓存读取", col_write: "缓存写入", col_result: "结果",
+      col_time: "最后挑灯", col_ping: "次数", col_read: "缓存读取", col_write: "缓存写入", col_result: "结果",
+      first_ping_hint: "范围内首次挑灯 {0}", context_hint: "最后一次挑灯的输入 token 数",
       no_events: "所选范围内没有挑灯记录。",
       history_hint: "记录和正在挑灯的对话保存在 {0}，记录保留 {1} 天。",
-      result_hit: "命中", result_miss: "未命中", result_error: "失败",
+      result_hit: "命中", result_miss: "未命中", result_error: "失败", result_count: "{0} {1}", still_lit: "挑灯中",
       stop_max_pings: "达到次数上限，已熄灭",
       stop_until: "到达单独设置的时长，已熄灭",
       stop_error: "已熄灭",
       stop_cache_miss: "缓存已过期，已熄灭",
-      events_more: "再显示 {0} 条",
+      events_more: "再显示 {0} 个对话",
       seconds: "{0} 秒", minutes_seconds: "{0} 分 {1} 秒", minutes: "{0} 分钟", hours_minutes: "{0} 小时 {1} 分"
     },
     en: {
@@ -153,6 +157,9 @@
       max_pings: "Up to", times: "pings",
       duration_hint: "While a conversation is idle, Wick pings every {0} to {1}, up to {2} times, keeping the cache for about {3} minutes. A conversation can be kept lit longer below.",
       duration_hint_off: "Wick is off. The cache expires after 5 idle minutes.",
+      subagent_duration: "Time kept lit for subagents",
+      subagent_hint: "While a subagent is idle, Wick pings it up to {0} times, keeping its cache for about {1} minutes. Subagents are snuffed out when the main conversation sends its next request.",
+      subagent_hint_off: "Subagents are not kept lit.", subagent_hint_wick_off: "With the default time set to Off, subagents are not kept lit either.",
       advanced: "Advanced", advanced_scope: "Applies to every conversation",
       interval_min: "Shortest interval (s)", interval_max: "Longest interval (s)", min_body_kb: "Minimum body (KiB)", history_retention_days: "Keep history (days)",
       advanced_hint: "Each ping is sent at a random time between the shortest and longest interval; the longest is at most 299 seconds. Requests with a smaller body than the minimum, such as title generation, are not kept lit.",
@@ -161,12 +168,13 @@
       retention_invalid: "Keep history for 1 to 3650 days",
       saved: "Saved", save_failed: "Save failed: {0}", load_failed: "Load failed: {0}",
       conversations: "Conversations kept lit",
-      col_conversation: "Conversation", col_model: "Model", col_model_account: "Model / Account", col_context: "Cache", col_pings: "Pings",
+      col_conversation: "Conversation", col_model: "Model", col_model_account: "Model / Account", col_context: "Context", col_pings: "Pings",
       col_idle: "Idle", col_next: "Next ping", col_duration: "Keep lit",
       no_conversations: "No conversations are kept lit. Conversations appear here after Claude Code sends a request.",
       subagent: "Subagent", no_prompt: "(no text)",
       session_hint: "Session {0}", key_hint_short: "Conversation key {0}", directory_hint: "Directory {0}",
       context_pending: "Shown after the first ping",
+      pings_round: "This round {0} / {1}", pings_total_hint: "{0} pings in all, {1} in this round. A new request starts a new round.",
       pinging: "Pinging",
       duration_default: "Default", duration_hours: "{0} h", duration_custom_option: "Custom…",
       duration_until: "Until {0}", duration_input: "Hours",
@@ -177,15 +185,16 @@
       totals_24h: "Last 24 hours: {0} pings, {1} failed, {2} cached tokens read, {3} written.",
       totals_7d: "Last 7 days: {0} pings, {1} failed, {2} cached tokens read, {3} written.",
       totals_all: "All {4} days kept: {0} pings, {1} failed, {2} cached tokens read, {3} written.",
-      col_time: "Time", col_ping: "Ping", col_read: "Cache read", col_write: "Cache write", col_result: "Result",
+      col_time: "Last ping", col_ping: "Pings", col_read: "Cache read", col_write: "Cache write", col_result: "Result",
+      first_ping_hint: "First ping in the range {0}", context_hint: "Input tokens of the last ping",
       no_events: "No pings in this range.",
       history_hint: "The history and the conversations kept lit are saved in {0}; the history is kept for {1} days.",
-      result_hit: "Hit", result_miss: "Miss", result_error: "Failed",
+      result_hit: "Hit", result_miss: "Miss", result_error: "Failed", result_count: "{0} {1}", still_lit: "Still lit",
       stop_max_pings: "Reached the ping limit, snuffed out",
       stop_until: "Reached the time set for this conversation, snuffed out",
       stop_error: "Snuffed out",
       stop_cache_miss: "Cache had expired, snuffed out",
-      events_more: "Show {0} more",
+      events_more: "Show {0} more conversations",
       seconds: "{0} s", minutes_seconds: "{0} min {1} s", minutes: "{0} min", hours_minutes: "{0} h {1} min"
     }
   };
@@ -432,7 +441,7 @@
   // user last touched a duration menu, so that an open menu is not closed.
   var MENU_HOLD = 15000;
   var menuTouched = 0;
-  // The server returns at most this many history entries.
+  // The server returns at most this many conversations of the history.
   var HISTORY_MAX = 5000;
 
   // The duration of one conversation: a menu of presets, with a number field
@@ -524,7 +533,6 @@
 
   function renderConversations() {
     var convs = status.conversations || [];
-    var maxPings = status.config ? status.config.max_pings : 0;
     var body = $("conversations");
     $("conversation-count").textContent = convs.length ? String(convs.length) : "";
     // Rebuilding the table would close a menu or field the user is editing.
@@ -548,9 +556,12 @@
           el("div", { class: "cell-note truncate", text: c.auth_id })
         ]),
         usage
-          ? el("td", { class: "num", text: fmtNum(usage.cache_read_input_tokens) })
+          ? el("td", { class: "num", text: fmtNum(contextTokens(usage)) })
           : el("td", { class: "num muted", title: translate("context_pending"), text: "—" }),
-        el("td", { class: "num", text: c.until ? String(c.pings) : c.pings + " / " + maxPings }),
+        el("td", { class: "num", title: translate("pings_total_hint", c.total_pings || 0, c.pings) }, [
+          el("div", { text: String(c.total_pings || 0) }),
+          c.until ? null : el("div", { class: "cell-note", text: translate("pings_round", c.pings, c.max_pings) })
+        ]),
         el("td", { class: "mono", "data-since": last ? last.getTime() : null, text: "—" }),
         el("td", { class: "mono", "data-next": next ? next.getTime() : null, text: "—" }),
         durationCell(c),
@@ -562,14 +573,26 @@
     tick();
   }
 
-  function eventResult(ev) {
-    var parts = [];
-    if (ev.error) parts.push(badge("failure", translate("result_error")));
-    else if (ev.usage && ev.usage.cache_creation_input_tokens > 0) parts.push(badge("warning", translate("result_miss")));
-    else parts.push(badge("success", translate("result_hit")));
+  // The input of a request: cached, written and uncached tokens.
+  function contextTokens(usage) {
+    return (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.input_tokens || 0);
+  }
+
+  // The outcome of a conversation's pings: one badge when they all ended
+  // alike, otherwise a badge with the count of each outcome, followed by
+  // "still lit" or how the last ping ended.
+  function historyResult(c, lit) {
+    var outcomes = [["success", "result_hit", c.hits], ["warning", "result_miss", c.misses], ["failure", "result_error", c.failed]]
+      .filter(function (o) { return o[2] > 0; });
+    var parts = outcomes.map(function (o) {
+      return badge(o[0], outcomes.length > 1 ? translate("result_count", translate(o[1]), o[2]) : translate(o[1]));
+    });
     var notes = [];
-    if (ev.error) notes.push(ev.error);
-    if (ev.stopped) notes.push(translate("stop_" + ev.stopped));
+    if (lit) notes.push(translate("still_lit"));
+    else {
+      if (c.last_error) notes.push(c.last_error);
+      if (c.last_stopped) notes.push(translate("stop_" + c.last_stopped));
+    }
     if (notes.length) parts.push(el("span", { class: "result-note", text: notes.join(lang === "zh" ? "；" : "; ") }));
     return parts;
   }
@@ -580,27 +603,31 @@
     var retention = status && status.config ? status.config.history_retention_days : "";
     var totals = data.totals || {};
     $("totals").textContent = translate("totals_" + data.range, fmtNum(totals.pings), fmtNum(totals.failed), fmtNum(totals.cache_read_tokens), fmtNum(totals.cache_creation_tokens), retention);
-    var events = data.events || [];
+    var convs = data.conversations || [];
+    var lit = {};
+    ((status && status.conversations) || []).forEach(function (c) { lit[c.key] = true; });
     var body = $("events");
     clear(body);
-    $("events-empty").hidden = events.length > 0;
-    body.parentNode.hidden = events.length === 0;
-    events.forEach(function (ev) {
-      var t = parseTime(ev.time);
-      var usage = ev.usage || {};
+    $("events-empty").hidden = convs.length > 0;
+    body.parentNode.hidden = convs.length === 0;
+    convs.forEach(function (c) {
+      var last = parseTime(c.last), first = parseTime(c.first);
       body.appendChild(el("tr", null, [
-        el("td", { class: "mono", text: t ? fmtTime(t) : "—" }),
-        conversationCell(ev),
-        el("td", { text: ev.model }),
-        el("td", { class: "num", text: String(ev.ping) }),
-        el("td", { class: "num", text: ev.usage ? fmtNum(usage.cache_read_input_tokens) : "—" }),
-        el("td", { class: "num", text: ev.usage ? fmtNum(usage.cache_creation_input_tokens) : "—" }),
-        el("td", { class: "result" }, eventResult(ev))
+        el("td", { class: "mono", title: first ? translate("first_ping_hint", fmtTime(first)) : null, text: last ? fmtTime(last) : "—" }),
+        conversationCell(c),
+        el("td", { text: c.model }),
+        el("td", { class: "num", text: String(c.pings) }),
+        c.context
+          ? el("td", { class: "num", title: translate("context_hint"), text: fmtNum(c.context) })
+          : el("td", { class: "num muted", text: "—" }),
+        el("td", { class: "num", text: fmtNum(c.cache_read_tokens) }),
+        el("td", { class: "num", text: fmtNum(c.cache_creation_tokens) }),
+        el("td", { class: "result" }, historyResult(c, c.key && lit[c.key]))
       ]));
     });
-    var rest = (data.count || 0) - events.length;
+    var rest = (data.count || 0) - convs.length;
     var more = $("events-more");
-    more.hidden = rest <= 0 || events.length >= HISTORY_MAX;
+    more.hidden = rest <= 0 || convs.length >= HISTORY_MAX;
     more.textContent = translate("events_more", Math.min(HISTORY_STEP, rest));
     $("history-hint").textContent = status && status.data_dir ? translate("history_hint", status.data_dir, retention) : "";
   }
@@ -669,7 +696,14 @@
 
   // ---- Settings ----
 
-  var FIELDS = ["max_pings", "interval_min", "interval_max", "min_body_kb", "history_retention_days"];
+  var FIELDS = ["max_pings", "subagent_max_pings", "interval_min", "interval_max", "min_body_kb", "history_retention_days"];
+
+  // The two duration choices: the default for conversations and the one
+  // for subagents, each a row of presets with a field for a custom count.
+  var DURATIONS = [
+    { field: "max_pings", buttons: "duration-buttons", custom: "custom-pings" },
+    { field: "subagent_max_pings", buttons: "subagent-buttons", custom: "custom-subagent-pings" }
+  ];
 
   // A field shows the value saved in config.yaml, or the value in effect
   // when the key is not set.
@@ -683,11 +717,11 @@
     return api("GET", CONFIG_API).then(function (data) { rawConfig = data || {}; });
   }
 
-  function pressDuration(value) {
-    Array.prototype.forEach.call($("duration-buttons").querySelectorAll("button"), function (b) {
+  function pressDuration(d, value) {
+    Array.prototype.forEach.call($(d.buttons).querySelectorAll("button"), function (b) {
       b.setAttribute("aria-pressed", b.getAttribute("data-value") === value ? "true" : "false");
     });
-    $("custom-pings").hidden = value !== "custom";
+    $(d.custom).hidden = value !== "custom";
   }
 
   function form() { return $("settings"); }
@@ -700,9 +734,10 @@
     });
     // A saved count that matches a preset selects the preset, also when it
     // was entered under Custom.
-    var pings = String(configValue("max_pings"));
-    customMode = PRESETS.indexOf(pings) < 0;
-    pressDuration(customMode ? "custom" : pings);
+    DURATIONS.forEach(function (d) {
+      var pings = String(configValue(d.field));
+      pressDuration(d, PRESETS.indexOf(pings) < 0 ? "custom" : pings);
+    });
     renderDurationHint();
   }
 
@@ -710,10 +745,21 @@
   // average every (interval_min + interval_max) / 2 seconds.
   function renderDurationHint() {
     var pings = Number(configValue("max_pings")), min = Number(configValue("interval_min")), max = Number(configValue("interval_max"));
-    if (!isFinite(pings) || !isFinite(min) || !isFinite(max)) { $("duration-hint").textContent = ""; return; }
-    if (pings === 0) { $("duration-hint").textContent = translate("duration_hint_off"); return; }
-    var minutes = Math.floor((pings * (min + max) / 2 + CACHE_TTL) / 60);
-    $("duration-hint").textContent = translate("duration_hint", fmtSeconds(min), fmtSeconds(max), pings, minutes);
+    if (!isFinite(pings) || !isFinite(min) || !isFinite(max)) { $("duration-hint").textContent = $("subagent-hint").textContent = ""; return; }
+    if (pings === 0) {
+      $("duration-hint").textContent = translate("duration_hint_off");
+      $("subagent-hint").textContent = translate("subagent_hint_wick_off");
+      return;
+    }
+    $("duration-hint").textContent = translate("duration_hint", fmtSeconds(min), fmtSeconds(max), pings, cacheMinutes(pings, min, max));
+    var sub = Number(configValue("subagent_max_pings"));
+    if (!isFinite(sub)) $("subagent-hint").textContent = "";
+    else if (sub === 0) $("subagent-hint").textContent = translate("subagent_hint_off");
+    else $("subagent-hint").textContent = translate("subagent_hint", sub, cacheMinutes(sub, min, max));
+  }
+
+  function cacheMinutes(pings, min, max) {
+    return Math.floor((pings * (min + max) / 2 + CACHE_TTL) / 60);
   }
 
   // Saves are queued so that a later change is not overwritten by an
@@ -799,16 +845,21 @@
     sessionStorage.setItem(KEY_STORE, key);
     start();
   });
-  Array.prototype.forEach.call($("duration-buttons").querySelectorAll("button"), function (button) {
-    button.addEventListener("click", function () {
-      var value = button.getAttribute("data-value");
-      customMode = value === "custom";
-      pressDuration(value);
-      if (customMode) {
-        $("settings").elements["max_pings"].focus();
-        return;
-      }
-      if (Number(value) !== configValue("max_pings")) save({ max_pings: Number(value) });
+  DURATIONS.forEach(function (d) {
+    Array.prototype.forEach.call($(d.buttons).querySelectorAll("button"), function (button) {
+      button.addEventListener("click", function () {
+        var value = button.getAttribute("data-value");
+        pressDuration(d, value);
+        if (value === "custom") {
+          $("settings").elements[d.field].focus();
+          return;
+        }
+        if (Number(value) !== configValue(d.field)) {
+          var patch = {};
+          patch[d.field] = Number(value);
+          save(patch);
+        }
+      });
     });
   });
   $("settings").addEventListener("change", saveField);
