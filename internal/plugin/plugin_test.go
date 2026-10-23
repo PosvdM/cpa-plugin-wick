@@ -10,15 +10,9 @@ import (
 
 type nopHost struct{}
 
-func (nopHost) ModelExecuteStream(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelStreamResponse, error) {
-	return pluginapi.HostModelStreamResponse{}, nil
+func (nopHost) ModelExecute(pluginapi.HostModelExecutionRequest) (pluginapi.HostModelExecutionResponse, error) {
+	return pluginapi.HostModelExecutionResponse{}, nil
 }
-
-func (nopHost) ModelStreamRead(string) (pluginapi.HostModelStreamReadResponse, error) {
-	return pluginapi.HostModelStreamReadResponse{Done: true}, nil
-}
-
-func (nopHost) ModelStreamClose(string) {}
 
 func (nopHost) Log(string, string, map[string]any) {}
 

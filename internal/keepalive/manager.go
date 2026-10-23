@@ -1,16 +1,16 @@
 // Package keepalive keeps the 5-minute prompt cache of idle Claude Code
 // conversations alive. It remembers the last request of each conversation
-// and, while the conversation is idle, replays it with max_tokens set to 1
-// before the cache entry expires. A replay reads the cache, which resets the
-// entry's TTL, and generates a single token.
+// and, while the conversation is idle, replays it without streaming and with
+// max_tokens set to 0 before the cache entry expires. A replay only reads the
+// cache, which resets the entry's TTL, and generates nothing.
 package keepalive
 
 import (
-	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,8 +22,6 @@ import (
 const (
 	// maxConversations bounds memory: each entry holds a full request body.
 	maxConversations = 32
-	// pingTimeout closes a ping stream that has not delivered message_start.
-	pingTimeout = 60 * time.Second
 	// maxEvents is the number of recent ping results kept for the status API.
 	maxEvents = 100
 )
@@ -78,7 +76,6 @@ type Manager struct {
 	cfg     config.Config
 	stopped bool
 	convs   map[string]*conversation
-	streams map[string]struct{}
 	// gen numbers schedules across all conversations, so that a ping still
 	// in flight for a removed conversation cannot match a new one.
 	gen    uint64
@@ -126,7 +123,6 @@ func New(opts Options) *Manager {
 		enabled: opts.Enabled,
 		cfg:     config.Default(),
 		convs:   make(map[string]*conversation),
-		streams: make(map[string]struct{}),
 	}
 	if m.clock == nil {
 		m.clock = realClock{}
@@ -154,21 +150,14 @@ func (m *Manager) Configure(cfg config.Config) {
 	}
 }
 
-// Stop cancels every schedule, forgets every conversation and closes the
-// streams of pings in flight.
+// Stop cancels every schedule and forgets every conversation. A ping in
+// flight finishes, but its result is not used.
 func (m *Manager) Stop() {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.stopped = true
 	for key := range m.convs {
 		m.removeLocked(key)
-	}
-	streams := make([]string, 0, len(m.streams))
-	for id := range m.streams {
-		streams = append(streams, id)
-	}
-	m.mu.Unlock()
-	for _, id := range streams {
-		m.host.ModelStreamClose(id)
 	}
 }
 
@@ -364,13 +353,12 @@ func (m *Manager) beginPing(key string, gen uint64, enabled bool) (request, int,
 	return c.req, c.pings, true
 }
 
-// ping replays req and reads the stream until message_start.
+// ping replays req and returns its usage.
 func (m *Manager) ping(req request) (*Usage, error) {
-	resp, err := m.host.ModelExecuteStream(pluginapi.HostModelExecutionRequest{
+	resp, err := m.host.ModelExecute(pluginapi.HostModelExecutionRequest{
 		EntryProtocol: "claude",
 		ExitProtocol:  "claude",
 		Model:         req.Model,
-		Stream:        true,
 		Body:          req.Body,
 		Headers:       req.Headers,
 		AuthID:        req.AuthID,
@@ -378,45 +366,14 @@ func (m *Manager) ping(req request) (*Usage, error) {
 	if err != nil {
 		return nil, err
 	}
-	if resp.StreamID == "" {
-		return nil, errors.New("host returned no stream")
+	usage, err := parseUsage(resp.Body)
+	if err == nil && resp.StatusCode >= http.StatusMultipleChoices {
+		err = fmt.Errorf("upstream status %d", resp.StatusCode)
 	}
-	id := resp.StreamID
-	m.mu.Lock()
-	m.streams[id] = struct{}{}
-	m.mu.Unlock()
-	watchdog := m.clock.AfterFunc(pingTimeout, func() {
-		defer func() { _ = recover() }()
-		m.host.ModelStreamClose(id)
-	})
-	defer func() {
-		watchdog.Stop()
-		m.host.ModelStreamClose(id)
-		m.mu.Lock()
-		delete(m.streams, id)
-		m.mu.Unlock()
-	}()
-	if resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("upstream status %d", resp.StatusCode)
+	if err != nil {
+		return nil, err
 	}
-
-	var scanner sseScanner
-	for {
-		chunk, err := m.host.ModelStreamRead(id)
-		if err != nil {
-			return nil, err
-		}
-		usage, err := scanner.feed(chunk.Payload)
-		if usage != nil || err != nil {
-			return usage, err
-		}
-		if chunk.Error != "" {
-			return nil, errors.New(chunk.Error)
-		}
-		if chunk.Done {
-			return nil, errors.New("stream ended before message_start")
-		}
-	}
+	return usage, nil
 }
 
 func (m *Manager) logLocked(level, message string, req request, ping int, stopped string, usage ...*Usage) {
@@ -435,11 +392,24 @@ func (m *Manager) logLocked(level, message string, req request, ping int, stoppe
 		fields["cache_read"] = usage[0].CacheReadTokens
 		fields["cache_creation"] = usage[0].CacheCreationTokens
 		fields["input"] = usage[0].InputTokens
+		fields["output"] = usage[0].OutputTokens
+	}
+	// CPA's log formatter prints only the fields it knows, such as model, so
+	// the others also go into the message.
+	var text strings.Builder
+	text.WriteString("wick: " + message)
+	for _, k := range logFieldOrder {
+		if v, ok := fields[k]; ok {
+			fmt.Fprintf(&text, " %s=%v", k, v)
+		}
 	}
 	// host.log is a quick callback into CPA's logger, so calling it while
 	// holding the lock keeps the log in the same order as the state changes.
-	m.host.Log(level, "wick: "+message, fields)
+	m.host.Log(level, text.String(), fields)
 }
+
+// logFieldOrder is the order of the fields written into log messages.
+var logFieldOrder = []string{"session", "key", "ping", "stopped", "cache_read", "cache_creation", "input", "output"}
 
 // ConversationStatus describes one tracked conversation.
 type ConversationStatus struct {

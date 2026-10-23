@@ -8,8 +8,8 @@
 | --- | --- |
 | `main.go` | cgo 入口，导出 `cliproxy_plugin_init`，在 C 边界和 `plugin.Handle` 之间转发调用 |
 | `internal/plugin` | RPC 方法分发：注册、拦截、请求结束、管理接口 |
-| `internal/keepalive` | 请求筛选、对话识别、续期调度和 SSE 用量解析 |
-| `internal/host` | 宿主回调的封装：流式模型执行、读取、关闭和日志 |
+| `internal/keepalive` | 请求筛选、对话识别、续期调度和用量解析 |
+| `internal/host` | 宿主回调的封装：模型执行和日志 |
 | `internal/config` | 解析 `plugins.configs.wick`，读取 CPA 配置中的启用状态 |
 
 ## 与 CPA 的接口
@@ -21,37 +21,36 @@
 | `request.intercept_after` | 在 CPA 选定账号之后、执行器改写请求之前调用，带客户端原始请求体、入站请求头和 `Metadata["selected_auth_id"]`。插件记录请求，返回空对象，请求原样通过 |
 | `request.intercept_before` | 能力要求实现，直接返回空对象 |
 | `request.complete` | 请求结束时异步调用。`Outcome` 为 `failed` 或 `rejected` 时停止对应对话的续期 |
-| `host.model.execute_stream` | 发送续期请求，`auth_id` 锁定原账号 |
-| `host.model.stream_read` / `stream_close` | 读取续期响应到 `message_start`，然后关闭 |
+| `host.model.execute` | 以非流式发送续期请求，`auth_id` 锁定原账号 |
 | `host.log` | 写 CPA 日志 |
 
 注意事项：
 
 - `RequestInterceptRequest` 和 `RequestCompletion` 没有 JSON 标签，宿主发送的字段名是 Go 字段名（如 `Body`、`Metadata`），`Body` 为 base64。解码必须使用 `pluginapi` 中的类型。
 - `request.intercept_after` 在请求的 goroutine 中同步调用，没有超时，CPA 每次换账号重试时会再调用一次。处理时只做筛选、计算对话键和复制请求体。
-- 插件自己通过 `host.model.execute_stream` 发出的请求不会再经过本插件的拦截器，其他插件（如用量统计）照常能看到它们。
-- 调用 `execute_stream` 时不传 `host_callback_id`，否则回调作用域结束时 CPA 会关闭这个流。`execute_stream` 会阻塞到第一个数据块到达，期间无法取消。
-- `stream_read` 没有超时。每次续期启动一个 60 秒的看门狗，到时关闭流，阻塞中的读取随之返回。
-- CPA 卸载插件时先拒绝该插件的所有宿主回调，再调用 `plugin.shutdown`。此时进行中的续期流无法关闭，会一直占用。`plugin.quiesce`（热更新替换时调用）不受影响。
+- 插件自己通过 `host.model.execute` 发出的请求不会再经过本插件的拦截器，其他插件（如用量统计）照常能看到它们。
+- `host.model.execute` 等上游返回完整响应后才返回，没有超时，也无法取消。`max_tokens: 0` 的请求不生成内容，通常很快返回。
 - 续期请求和普通请求一样计入账号状态，失败（如 429）会让账号进入冷却。
+- CPA 的日志格式只输出它认识的字段（如 `model`），插件传给 `host.log` 的其他字段会被丢掉，因此插件把这些字段也写进日志正文。
 
 ## 续期请求
 
 续期请求要命中原请求写入的缓存，发往上游的内容必须与原请求一致：
 
-- 请求体是客户端原始请求体，只用 `sjson` 把 `max_tokens` 改成 1。`sjson` 原位修改，其余字节和键的顺序不变。CPA 计算 CCH 签名时不包含 `max_tokens`，系统提示开头的计费块因此不变。
+- 请求体是客户端原始请求体，只用 `sjson` 把 `max_tokens` 改成 0、`stream` 改成 `false`。`sjson` 原位修改，其余字节和键的顺序不变。CPA 处理非流式请求时本来也会把 `stream` 设为 `false`。
 - 请求头是记录下来的入站请求头，去掉 `Content-Length`。CPA 依据 `X-App: cli`、`claude-cli/` 开头的 User-Agent、`anthropic-beta` 中的 `claude-code-20250219` 和请求体中的 `metadata.user_id` 判断原生 Claude Code，满足时不改写 `cache_control`。
-- 请求以流式发送。改成非流式会改变请求体中的 `stream`，进而改变 CCH 签名。Anthropic 对流式请求拒绝 `max_tokens: 0`（400，`stream cannot be true when max_tokens is 0`），因此用 1。
-- `max_tokens: 1` 时上游只返回 `message_start`、`message_delta`（`stop_reason: max_tokens`，`output_tokens: 1`）和 `message_stop`，没有内容块；adaptive thinking 下相同（2026-10-23 在 Opus 5.5 和 Haiku 5.5 上实测）。
-- budget 模式（`thinking.type` 为 `enabled`）要求 `max_tokens` 大于 `budget_tokens`，CPA 的 `normalizeClaudeBudget`（`internal/thinking/provider/claude/apply.go`）会因此改写 `budget_tokens`，续期请求与原请求不再一致，所以这类请求不续期。
+- 请求以非流式发送。Anthropic 对流式请求拒绝 `max_tokens: 0`（400，`stream cannot be true when max_tokens is 0`）。
+- CCH 签名：对 Claude OAuth 账号，CPA 每次都对最终请求体重新计算 CCH（`claude_signing.go` 的 `signAnthropicMessagesBody`），因为经 CPA 的 Claude Code 自己不签。改动 `stream` 和 `max_tokens` 后，签名仍与请求体一致。计费块中的 CCH 每轮对话都不同，不影响缓存命中。
+- `max_tokens: 0` 时上游返回 `stop_reason: max_tokens`，没有内容，`output_tokens` 为 0。
+- budget 模式（`thinking.type` 为 `enabled`）下，CPA 的 `normalizeClaudeBudget`（`internal/thinking/provider/claude/apply.go`）在模型登记了默认输出上限时把 `max_tokens <= 0` 替换为该默认值，续期请求会真正生成内容。实测中 0 仍然生效，但为保险起见，这类请求不续期。adaptive 模式不经过这段代码。
 
-读到 `message_start` 后，插件记录其中的 `usage`。`cache_creation_input_tokens` 大于 0 说明这次请求写入了缓存：缓存已经过期，或续期请求与原请求不一致。此时停止续期，避免反复支付写入费用。
+插件记录响应中的 `usage`。`cache_creation_input_tokens` 大于 0 说明这次请求写入了缓存：缓存已经过期，或续期请求与原请求不一致。此时停止续期，避免反复支付写入费用。
 
 ## 请求筛选
 
 满足以下全部条件的请求才会记录：
 
-- `SourceFormat` 为 `claude`，并且是流式请求；
+- `SourceFormat` 为 `claude`，并且是流式请求（Claude Code 的主对话和 subagent 都用流式）；
 - 请求头 `X-App` 为 `cli`，User-Agent 以 `claude-cli/` 开头；
 - 请求体不小于 `min_body_kb`；
 - 能取得会话 ID（`X-Claude-Code-Session-Id`，缺失时用 `metadata.user_id`）和 `selected_auth_id`；
@@ -73,7 +72,7 @@
 - 每次安排都从管理器的全局计数器取一个代数（`gen`）。计时器触发和续期返回时都核对代数，旧的计时器和结果不影响新的安排；对话被删除后重新出现时，进行中的旧续期也不会与它匹配。
 - `max_pings` 改为 0 时清空所有对话。
 - 每次续期前读取 CPA 配置文件，插件被关闭时删除对话。CPA 关闭插件后仍保留已加载的实例，不会通知插件。
-- `plugin.quiesce` 和 `plugin.shutdown` 停止所有计时器、清空对话，并关闭进行中的续期流。之后的 `plugin.reconfigure` 恢复运行。
+- `plugin.quiesce` 和 `plugin.shutdown` 停止所有计时器并清空对话。进行中的续期照常完成，结果不再使用。之后的 `plugin.reconfigure` 恢复运行。
 - 计时器回调运行在独立的 goroutine 中，未恢复的 panic 会使 CPA 进程退出，因此回调带 `recover`。
 
 ## 开发
@@ -90,7 +89,7 @@ go vet ./internal/...
 go test ./internal/...
 ```
 
-测试使用假的宿主和时钟，不发送真实请求，也不等待真实时间。覆盖内容：请求筛选和续期请求体、对话键、续期间隔和次数、新请求重新计时、缓存未命中和错误时停止、subagent 的删除（包括带 agent ID 的并行 subagent）、失败和中断请求的处理、插件关闭和 `max_pings: 0`、过期的续期结果、SSE 解析、配置校验，以及插件 RPC 的注册和拦截请求解码。
+测试使用假的宿主和时钟，不发送真实请求，也不等待真实时间。覆盖内容：请求筛选和续期请求体、对话键、续期间隔和次数、新请求重新计时、缓存未命中和错误时停止、subagent 的删除（包括带 agent ID 的并行 subagent）、失败和中断请求的处理、插件关闭和 `max_pings: 0`、过期的续期结果、用量解析、配置校验，以及插件 RPC 的注册和拦截请求解码。
 
 ### 构建
 

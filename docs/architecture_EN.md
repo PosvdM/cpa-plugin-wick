@@ -8,8 +8,8 @@
 | --- | --- |
 | `main.go` | cgo entry point; exports `cliproxy_plugin_init` and forwards calls between the C boundary and `plugin.Handle` |
 | `internal/plugin` | RPC dispatch: registration, interception, request completion, management API |
-| `internal/keepalive` | Request filtering, conversation keys, refresh scheduling and SSE usage parsing |
-| `internal/host` | Host callback wrappers: streaming model execution, read, close and log |
+| `internal/keepalive` | Request filtering, conversation keys, refresh scheduling and usage parsing |
+| `internal/host` | Host callback wrappers: model execution and log |
 | `internal/config` | Parses `plugins.configs.wick` and reads the enabled flags from the CPA config |
 
 ## CPA interface
@@ -21,37 +21,36 @@ The plugin registers three capabilities: `request_interceptor`, `request_lifecyc
 | `request.intercept_after` | Called after CPA selects the account and before the executor rewrites the request, with the raw client body, the inbound headers and `Metadata["selected_auth_id"]`. The plugin records the request and returns an empty object, so the request passes through unchanged |
 | `request.intercept_before` | Required by the capability; returns an empty object |
 | `request.complete` | Called asynchronously when a request ends. An `Outcome` of `failed` or `rejected` stops refreshing that conversation |
-| `host.model.execute_stream` | Sends a refresh, with `auth_id` pinned to the original account |
-| `host.model.stream_read` / `stream_close` | Reads the refresh response up to `message_start`, then closes it |
+| `host.model.execute` | Sends a non-streaming refresh, with `auth_id` pinned to the original account |
 | `host.log` | Writes to the CPA log |
 
 Notes:
 
 - `RequestInterceptRequest` and `RequestCompletion` have no JSON tags, so the host sends Go field names (`Body`, `Metadata` and so on), with `Body` in base64. Decode them with the `pluginapi` types.
 - `request.intercept_after` runs synchronously on the request goroutine with no timeout, and CPA calls it again for every account retry. The handler only filters, computes the conversation key and copies the body.
-- Requests the plugin sends through `host.model.execute_stream` skip this plugin's own interceptors. Other plugins, such as usage trackers, still see them.
-- `execute_stream` is called without `host_callback_id`; with one, CPA would close the stream when the callback scope ends. `execute_stream` blocks until the first chunk arrives and cannot be cancelled meanwhile.
-- `stream_read` has no timeout. Each refresh starts a 60-second watchdog that closes the stream, which makes a blocked read return.
-- When CPA unloads the plugin, it rejects all of the plugin's host callbacks before calling `plugin.shutdown`, so a refresh stream in progress cannot be closed and stays open. `plugin.quiesce`, called when a hot update replaces the plugin, is not affected.
+- Requests the plugin sends through `host.model.execute` skip this plugin's own interceptors. Other plugins, such as usage trackers, still see them.
+- `host.model.execute` returns once the upstream has sent the whole response; it has no timeout and cannot be cancelled. A `max_tokens: 0` request generates nothing and usually returns quickly.
 - Refreshes count toward the account state like any request; a failure such as a 429 puts the account into cooldown.
+- CPA's log format prints only the fields it knows, such as `model`, and drops the other fields passed to `host.log`, so the plugin also writes them into the message.
 
 ## Refresh request
 
 To hit the cache written by the original request, what goes upstream must match the original request:
 
-- The body is the raw client body with only `max_tokens` set to 1 by `sjson`. `sjson` edits in place, so the other bytes and the key order stay the same. CPA leaves `max_tokens` out of the CCH signature, so the billing block at the start of the system prompt does not change.
+- The body is the raw client body with only `max_tokens` set to 0 and `stream` to `false` by `sjson`. `sjson` edits in place, so the other bytes and the key order stay the same. CPA would set `stream` to `false` for a non-streaming execution anyway.
 - The headers are the recorded inbound headers without `Content-Length`. CPA treats a request as native Claude Code when it has `X-App: cli`, a User-Agent starting with `claude-cli/`, `claude-code-20250219` in `anthropic-beta`, and `metadata.user_id` in the body; it then leaves `cache_control` alone.
-- The request is streamed. A non-streaming request would change `stream` in the body and with it the CCH signature. Anthropic rejects `max_tokens: 0` on streaming requests (400, `stream cannot be true when max_tokens is 0`), hence 1.
-- With `max_tokens: 1` the upstream returns only `message_start`, `message_delta` (`stop_reason: max_tokens`, `output_tokens: 1`) and `message_stop`, with no content block; the same holds with adaptive thinking (tested on Opus 5.5 and Haiku 5.5 on 2026-10-23).
-- Budget mode (`thinking.type` is `enabled`) requires `max_tokens` to exceed `budget_tokens`, so CPA's `normalizeClaudeBudget` (`internal/thinking/provider/claude/apply.go`) would rewrite `budget_tokens` and the refresh would no longer match the original request. Such requests are not refreshed.
+- The request is not streamed. Anthropic rejects `max_tokens: 0` on streaming requests (400, `stream cannot be true when max_tokens is 0`).
+- CCH signature: for Claude OAuth accounts, CPA recomputes the CCH of the final body on every request (`signAnthropicMessagesBody` in `claude_signing.go`), because Claude Code behind CPA does not sign. After `stream` and `max_tokens` change, the signature still matches the body. The CCH in the billing block differs on every turn and does not affect cache hits.
+- With `max_tokens: 0` the upstream returns `stop_reason: max_tokens` with no content and `output_tokens` 0.
+- In budget mode (`thinking.type` is `enabled`), CPA's `normalizeClaudeBudget` (`internal/thinking/provider/claude/apply.go`) replaces `max_tokens <= 0` with the model's default output limit when the model registers one, and the refresh would generate output. In tests 0 still took effect, but such requests are not refreshed to be safe. Adaptive mode does not reach that code.
 
-After `message_start`, the plugin records its `usage`. A `cache_creation_input_tokens` above 0 means the refresh wrote to the cache: the cache had expired, or the refresh differs from the original request. Refreshing then stops so that writes are not paid for again and again.
+The plugin records the `usage` of the response. A `cache_creation_input_tokens` above 0 means the refresh wrote to the cache: the cache had expired, or the refresh differs from the original request. Refreshing then stops so that writes are not paid for again and again.
 
 ## Request filter
 
 A request is recorded only when all of the following hold:
 
-- `SourceFormat` is `claude` and the request is streaming;
+- `SourceFormat` is `claude` and the request is streaming (Claude Code's main conversation and subagents stream);
 - the `X-App` header is `cli` and the User-Agent starts with `claude-cli/`;
 - the body is at least `min_body_kb`;
 - a session ID (`X-Claude-Code-Session-Id`, falling back to `metadata.user_id`) and `selected_auth_id` are present;
@@ -73,7 +72,7 @@ At most 32 conversations are kept in memory; beyond that, the one with the oldes
 - Every schedule takes a generation (`gen`) from a counter shared by the whole manager. The timer callback and the refresh result both check it, so stale timers and results do not affect the new schedule, and a refresh still in flight cannot match a conversation that was deleted and then seen again.
 - Setting `max_pings` to 0 clears all conversations.
 - Before each refresh the plugin reads the CPA config file and deletes the conversation if the plugin is disabled. CPA keeps a disabled plugin loaded without notifying it.
-- `plugin.quiesce` and `plugin.shutdown` stop all timers, clear the conversations and close refresh streams in progress. A later `plugin.reconfigure` resumes.
+- `plugin.quiesce` and `plugin.shutdown` stop all timers and clear the conversations. A refresh in progress completes, but its result is not used. A later `plugin.reconfigure` resumes.
 - Timer callbacks run on their own goroutines, where an unrecovered panic would exit the CPA process, so they use `recover`.
 
 ## Development
@@ -90,7 +89,7 @@ go vet ./internal/...
 go test ./internal/...
 ```
 
-The tests use a fake host and clock; they send no real requests and do not wait in real time. They cover the request filter and refresh body, conversation keys, refresh intervals and counts, rescheduling on a new request, stopping on a cache miss or error, removal of subagents (including parallel subagents with agent IDs), failed and interrupted requests, disabling the plugin and `max_pings: 0`, stale refresh results, SSE parsing, config validation, and plugin RPC registration and decoding of intercepted requests.
+The tests use a fake host and clock; they send no real requests and do not wait in real time. They cover the request filter and refresh body, conversation keys, refresh intervals and counts, rescheduling on a new request, stopping on a cache miss or error, removal of subagents (including parallel subagents with agent IDs), failed and interrupted requests, disabling the plugin and `max_pings: 0`, stale refresh results, usage parsing, config validation, and plugin RPC registration and decoding of intercepted requests.
 
 ### Build
 
