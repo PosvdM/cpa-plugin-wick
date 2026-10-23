@@ -11,9 +11,11 @@ import (
 // maxPromptRunes bounds the first prompt kept for the status API.
 const maxPromptRunes = 200
 
-// Claude Code writes the working directory into the environment section of
-// the system prompt, as "Primary working directory: <path>" and, in older
-// versions and some subagents, "Working directory: <path>".
+// Claude Code writes the working directory into an environment section, as
+// "Primary working directory: <path>" and, in older versions and some
+// subagents, "Working directory: <path>". Recent versions send the section
+// as a message with role "system" near the start of messages; older ones put
+// it in the system prompt.
 var workDirPattern = regexp.MustCompile(`(?m)^[ \t]*(?:-[ \t]*)?(?:Primary working directory|Working directory):[ \t]*([^\r\n]+)`)
 
 var (
@@ -23,8 +25,12 @@ var (
 	spacePattern       = regexp.MustCompile(`\s+`)
 )
 
-// workingDirectory returns the working directory named in the system prompt,
-// or "" when there is none.
+// maxScannedMessages bounds the messages read for the description.
+const maxScannedMessages = 20
+
+// workingDirectory returns the first working directory named in the system
+// prompt or in the system messages at the start of the conversation: the
+// directory the session started in. It returns "" when there is none.
 func workingDirectory(body []byte) string {
 	var dir string
 	visit := func(text string) bool {
@@ -35,12 +41,25 @@ func workingDirectory(body []byte) string {
 		}
 		return dir == ""
 	}
-	system := gjson.GetBytes(body, "system")
-	if system.IsArray() {
-		system.ForEach(func(_, block gjson.Result) bool { return visit(block.Get("text").String()) })
-	} else {
-		visit(system.String())
+	visitContent := func(content gjson.Result) bool {
+		if content.IsArray() {
+			content.ForEach(func(_, block gjson.Result) bool { return visit(block.Get("text").String()) })
+			return dir == ""
+		}
+		return visit(content.String())
 	}
+	if !visitContent(gjson.GetBytes(body, "system")) {
+		return dir
+	}
+	gjson.GetBytes(body, "messages").ForEach(func(i, msg gjson.Result) bool {
+		if i.Int() >= maxScannedMessages {
+			return false
+		}
+		if msg.Get("role").String() != "system" {
+			return true
+		}
+		return visitContent(msg.Get("content"))
+	})
 	return dir
 }
 
@@ -51,7 +70,7 @@ func workingDirectory(body []byte) string {
 func firstPrompt(body []byte) string {
 	var prompt string
 	gjson.GetBytes(body, "messages").ForEach(func(i, msg gjson.Result) bool {
-		if i.Int() >= 10 {
+		if i.Int() >= maxScannedMessages {
 			return false
 		}
 		if msg.Get("role").String() != "user" {

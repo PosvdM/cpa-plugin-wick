@@ -316,6 +316,11 @@ func TestWorkingDirectoryAndFirstPrompt(t *testing.T) {
 		`{"system":[{"type":"text","text":" - Primary working directory: D:\\Code\\app (was D:\\old)\n"}]}`: `D:\Code\app`,
 		`{"system":"<env>\nWorking directory: /srv/x\n</env>"}`:                                             "/srv/x",
 		`{"system":[{"type":"text","text":"no directory"}]}`:                                                "",
+		`{"system":[{"type":"text","text":"x"}],"messages":[{"role":"user","content":"hi"},{"role":"system","content":"# Environment
+ - Primary working directory: /first
+"},{"role":"system","content":"# Environment update
+ - Primary working directory: /second (was /first)
+"}]}`: "/first",
 	}
 	for raw, want := range dirs {
 		if got := workingDirectory([]byte(raw)); got != want {

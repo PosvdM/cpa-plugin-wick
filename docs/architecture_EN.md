@@ -95,8 +95,8 @@ At most 32 conversations are kept in memory; beyond that, the one with the oldes
 
 The description on the page is taken from the body when the request is recorded (`describe.go`):
 
-- Project directory: the path on the `Primary working directory:` or `Working directory:` line of `system`, without the ` (was …)` that environment updates append.
-- First prompt: the first user text in the first 10 messages. `<system-reminder>` blocks are removed first; local command output (`<local-command-…>`, `<bash-…>`) and the `Caveat: …` note Claude Code adds are skipped; a slash command is shown as `<command-name>` plus `<command-args>`. Whitespace collapses to single spaces; the status keeps up to 200 characters and the history up to 80.
+- Project directory: the path on the first `Primary working directory:` or `Working directory:` line, that is, the directory the session started in. Recent Claude Code versions send the environment as a message with role `system` in `messages`, older ones in `system`; both are searched, `messages` only in its first 20 entries.
+- First prompt: the first user text in the first 20 messages. `<system-reminder>` blocks are removed first; local command output (`<local-command-…>`, `<bash-…>`) and the `Caveat: …` note Claude Code adds are skipped; a slash command is shown as `<command-name>` plus `<command-args>`. Whitespace collapses to single spaces; the status keeps up to 200 characters and the history up to 80.
 
 ## Scheduling
 

@@ -95,8 +95,8 @@
 
 页面上的描述在记录请求时从请求体中取出（`describe.go`）：
 
-- 项目目录：`system` 中 `Primary working directory:` 或 `Working directory:` 一行的路径，去掉环境更新时附加的 ` (was …)`。
-- 第一句话：前 10 条消息中第一条用户文字。先删去 `<system-reminder>` 块，跳过本地命令的输出（`<local-command-…>`、`<bash-…>`）和 Claude Code 附加的 `Caveat: …` 说明；斜杠命令显示为 `<command-name>` 加 `<command-args>`。空白合并为一个空格，状态中最多 200 个字，挑灯记录中最多 80 个字。
+- 项目目录：第一次出现的 `Primary working directory:` 或 `Working directory:` 一行的路径，即会话开始时的目录。Claude Code 较新的版本把环境信息作为 `messages` 中 `role` 为 `system` 的消息发送，较早的版本写在 `system` 中，两处都查，`messages` 只查前 20 条。
+- 第一句话：前 20 条消息中第一条用户文字。先删去 `<system-reminder>` 块，跳过本地命令的输出（`<local-command-…>`、`<bash-…>`）和 Claude Code 附加的 `Caveat: …` 说明；斜杠命令显示为 `<command-name>` 加 `<command-args>`。空白合并为一个空格，状态中最多 200 个字，挑灯记录中最多 80 个字。
 
 ## 调度
 
