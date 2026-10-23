@@ -63,7 +63,7 @@ Once a conversation is idle, the cache lasts about `max_pings` × the average in
 Open **Wick** from the plugin menu of the CPA Management Center. The page uses the management key the Management Center remembered at sign-in, or asks for one; the theme and language follow the Management Center.
 
 - **Settings**: **Default time kept lit** offers Off, 15 min, 30 min, 1 hour or Custom, which set `max_pings` to `0`, `2`, `6`, `12` or the number entered; below it the page shows the estimated cache lifetime for the current intervals. **Advanced** applies to every conversation and changes `interval_min`, `interval_max`, `min_body_kb` and `history_retention_days`. Changes are saved to `config.yaml` and applied by the plugin within a few seconds.
-- **Conversations kept lit**: each conversation shows the name of its project directory and its first prompt (subagents are tagged Subagent); hovering shows the full first prompt, the directory and the session ID. The other columns show the model and account, the cache tokens read by the last ping, the ping count, the idle time and a countdown to the next ping. **Keep lit** offers Default, 1, 2, 4 or 8 hours, or a custom number of hours, counted from when it is set; below it the page shows until when. **Snuff out** stops pinging that conversation until it receives its next request.
+- **Conversations kept lit**: each conversation shows its client (Claude Code, Claude Desktop, VS Code and so on, taken from the request's User-Agent) and its first prompt, with subagents tagged Subagent; hovering shows the full first prompt, the project directory and the session ID. The other columns show the model and account, the cache tokens read by the last ping, the ping count, the idle time and a countdown to the next ping. **Keep lit** offers Default, 1, 2, 4 or 8 hours, or a custom number of hours, counted from when it is set; below it the page shows until when. **Snuff out** stops pinging that conversation until it receives its next request.
 - **Ping history**: switches between 24 hours, 7 days and All, and shows the totals for that range (pings, failures, cache tokens read and written) and each ping's time, conversation, cache tokens and result. The list starts with 20 entries and can be expanded.
 
 The first prompt is the text the user typed in the first user message of the conversation, leaving out the system reminders and local command output that Claude Code adds; a conversation that starts with a slash command shows the command and its arguments.
@@ -74,7 +74,7 @@ The data directory is `<plugins.dir>/data/wick` by default, inside the mounted p
 
 | Path | Content |
 | --- | --- |
-| `history/<UTC date>.jsonl` | Ping history, one line per ping: time, the first 8 characters of the session ID and conversation key, model, project directory, the first 80 characters of the first prompt, cache tokens and result. Files older than `history_retention_days` days are deleted |
+| `history/<UTC date>.jsonl` | Ping history, one line per ping: time, the first 8 characters of the session ID and conversation key, model, client, project directory, the first 80 characters of the first prompt, cache tokens and result. Files older than `history_retention_days` days are deleted |
 | `conversations/` | The conversations kept lit: the last request and the schedule of each. A conversation's files are deleted when it is snuffed out |
 
 ## Logs and API

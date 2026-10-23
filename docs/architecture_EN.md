@@ -61,7 +61,8 @@ How the page works:
 - The default duration presets and their `max_pings` values are in `PRESETS` in `page.js`, and the per-conversation presets in `DURATION_PRESETS`. The estimated cache lifetime is `max_pings × (interval_min + interval_max) / 2 + 300` seconds, shown in whole minutes rounded down.
 - The page refreshes the status every 5 seconds and pauses while the tab is hidden. Idle times and countdowns update locally every second, corrected for the offset from the plugin clock using `now` in the status. The history is reloaded only when `last_ping` in the status changes.
 - While the user is typing in the custom duration field, or has touched a conversation's duration menu in the last 15 seconds, a refresh does not rebuild the conversation table, which would close the menu. Arrow keys on a closed menu fire `change` at every step, so a change made with the keyboard is committed on Enter or when the menu loses focus.
-- A conversation is shown by the last element of its project directory and its first prompt; the full first prompt, directory, session ID and conversation key are in the tooltip.
+- A conversation is shown by its client and first prompt; the full first prompt, project directory, session ID and conversation key are in the tooltip. The entrypoint-to-client names are in `CLIENTS` in `page.js`; entrypoints not listed are shown as sent.
+- The idle time and the countdown are both shown as `m:ss`, or `h:mm:ss` from an hour on.
 
 ## Ping request
 
@@ -93,7 +94,9 @@ Only the last request of each conversation is kept. When the main conversation (
 
 At most 32 conversations are kept in memory; beyond that, the one with the oldest last request is deleted, with conversations that have a time set deleted last.
 
-The description on the page is taken from the body when the request is recorded (`describe.go`):
+The description on the page is taken when the request is recorded (`describe.go`):
+
+- Client: the entrypoint in the User-Agent `claude-cli/<version> (<user type>, <entrypoint>, ...)`, such as `cli`, `claude-desktop`, `claude-vscode` or `sdk-ts`.
 
 - Project directory: the path on the first `Primary working directory:` or `Working directory:` line, that is, the directory the session started in. Recent Claude Code versions send the environment as a message with role `system` in `messages`, older ones in `system`; both are searched, `messages` only in its first 20 entries.
 - First prompt: the first user text in the first 20 messages. `<system-reminder>` blocks are removed first; local command output (`<local-command-…>`, `<bash-…>`) and the `Caveat: …` note Claude Code adds are skipped; a slash command is shown as `<command-name>` plus `<command-args>`. Whitespace collapses to single spaces; the status keeps up to 200 characters and the history up to 80.

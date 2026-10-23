@@ -28,6 +28,22 @@ var (
 // maxScannedMessages bounds the messages read for the description.
 const maxScannedMessages = 20
 
+// clientEntrypoint returns the entrypoint in a Claude Code User-Agent,
+// "claude-cli/<version> (<user type>, <entrypoint>, ...)", such as cli,
+// claude-desktop or claude-vscode, or "" when there is none.
+func clientEntrypoint(userAgent string) string {
+	_, rest, ok := strings.Cut(userAgent, "(")
+	if !ok {
+		return ""
+	}
+	rest, _, _ = strings.Cut(rest, ")")
+	parts := strings.Split(rest, ",")
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
 // workingDirectory returns the first working directory named in the system
 // prompt or in the system messages at the start of the conversation: the
 // directory the session started in. It returns "" when there is none.

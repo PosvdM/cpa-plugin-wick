@@ -134,6 +134,7 @@ type Event struct {
 	Key     string    `json:"key"`
 	Model   string    `json:"model"`
 	Agent   bool      `json:"agent,omitempty"`
+	Client  string    `json:"client,omitempty"`
 	Cwd     string    `json:"cwd,omitempty"`
 	Prompt  string    `json:"prompt,omitempty"`
 	Ping    int       `json:"ping"`
@@ -470,6 +471,7 @@ func (m *Manager) finishPing(key string, gen uint64, req request, n int, start t
 		Key:     short(req.Key),
 		Model:   req.Model,
 		Agent:   req.Agent != "",
+		Client:  req.Client,
 		Cwd:     req.Cwd,
 		Prompt:  truncate(req.Prompt, maxEventPromptRunes),
 		Ping:    n,
@@ -614,6 +616,7 @@ type ConversationStatus struct {
 	Key         string    `json:"key"`
 	Model       string    `json:"model"`
 	Agent       bool      `json:"agent,omitempty"`
+	Client      string    `json:"client,omitempty"`
 	Cwd         string    `json:"cwd,omitempty"`
 	Prompt      string    `json:"prompt,omitempty"`
 	AuthID      string    `json:"auth_id"`
@@ -652,6 +655,7 @@ func (m *Manager) Status() Status {
 			Key:         short(c.req.Key),
 			Model:       c.req.Model,
 			Agent:       c.req.Agent != "",
+			Client:      c.req.Client,
 			Cwd:         c.req.Cwd,
 			Prompt:      c.req.Prompt,
 			AuthID:      c.req.AuthID,

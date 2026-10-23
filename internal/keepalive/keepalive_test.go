@@ -302,12 +302,24 @@ func TestEventDescribesConversation(t *testing.T) {
 	m, clock, _, rec := newRecordingManager(testConfig())
 	m.Observe(withAgent(intercept("r1", "sess", b), "a1"))
 	c := m.Status().Conversations[0]
-	if c.Cwd != "/home/me/project" || c.Prompt != "Fix the login bug" || !c.Agent || c.Session != "sess" {
+	if c.Cwd != "/home/me/project" || c.Prompt != "Fix the login bug" || !c.Agent || c.Session != "sess" || c.Client != "cli" {
 		t.Fatalf("status %+v", c)
 	}
 	clock.Advance(260 * time.Second)
 	if ev := rec.all(); len(ev) != 1 || ev[0].Cwd != "/home/me/project" || ev[0].Prompt != "Fix the login bug" || !ev[0].Agent {
 		t.Fatalf("events %+v", ev)
+	}
+}
+
+func TestClientEntrypoint(t *testing.T) {
+	for ua, want := range map[string]string{
+		"claude-cli/2.1.299 (external, cli)":                             "cli",
+		"claude-cli/2.1.299 (external, claude-desktop, agent-sdk/0.2.1)": "claude-desktop",
+		"claude-cli/2.1.299":                                             "",
+	} {
+		if got := clientEntrypoint(ua); got != want {
+			t.Errorf("%q: %q, want %q", ua, got, want)
+		}
 	}
 }
 

@@ -78,6 +78,7 @@ type savedRequest struct {
 	Model     string      `json:"model"`
 	AuthID    string      `json:"auth_id"`
 	RequestID string      `json:"request_id"`
+	Client    string      `json:"client,omitempty"`
 	Cwd       string      `json:"cwd,omitempty"`
 	Prompt    string      `json:"prompt,omitempty"`
 	Headers   http.Header `json:"headers"`
@@ -231,6 +232,7 @@ func encodeRequest(req request) []byte {
 		Model:     req.Model,
 		AuthID:    req.AuthID,
 		RequestID: req.RequestID,
+		Client:    req.Client,
 		Cwd:       req.Cwd,
 		Prompt:    req.Prompt,
 		Headers:   req.Headers,
@@ -257,6 +259,7 @@ func decodeRequest(raw []byte) (request, error) {
 		Model:     saved.Model,
 		AuthID:    saved.AuthID,
 		RequestID: saved.RequestID,
+		Client:    saved.Client,
 		Cwd:       saved.Cwd,
 		Prompt:    saved.Prompt,
 		Headers:   saved.Headers,

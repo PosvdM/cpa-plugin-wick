@@ -342,9 +342,16 @@
     return text;
   }
 
+  // A length of time as m:ss, or h:mm:ss from an hour on, for the idle time
+  // and the countdown.
+  function fmtClockSpan(total) {
+    total = Math.max(0, total);
+    var h = Math.floor(total / 3600), m = Math.floor(total / 60) % 60, s = total % 60;
+    return h ? h + ":" + pad(m) + ":" + pad(s) : m + ":" + pad(s);
+  }
+
   function fmtCountdown(ms) {
-    var total = Math.ceil(ms / 1000);
-    return Math.floor(total / 60) + ":" + pad(total % 60);
+    return fmtClockSpan(Math.ceil(ms / 1000));
   }
 
   function fmtNum(n) {
@@ -382,7 +389,7 @@
   function tick() {
     var t = now();
     Array.prototype.forEach.call(document.querySelectorAll("[data-since]"), function (node) {
-      node.textContent = fmtSeconds((t - Number(node.getAttribute("data-since"))) / 1000);
+      node.textContent = fmtClockSpan(Math.floor((t - Number(node.getAttribute("data-since"))) / 1000));
     });
     Array.prototype.forEach.call(document.querySelectorAll("[data-next]"), function (node) {
       var left = Number(node.getAttribute("data-next")) - t;
@@ -390,13 +397,21 @@
     });
   }
 
-  function baseName(path) {
-    var parts = String(path || "").split(/[\\/]+/).filter(Boolean);
-    return parts.length ? parts[parts.length - 1] : String(path || "");
+  // Names of the Claude Code entrypoints in the User-Agent; others are shown
+  // as sent.
+  var CLIENTS = {
+    "cli": "Claude Code", "claude-desktop": "Claude Desktop", "claude-desktop-3p": "Claude Desktop",
+    "claude-vscode": "VS Code", "claude-code-jetbrains-plugin": "JetBrains", "claude-jetbrains": "JetBrains",
+    "sdk-ts": "Agent SDK", "sdk-py": "Agent SDK", "sdk-cli": "Agent SDK"
+  };
+
+  function clientName(c) {
+    if (!c.client) return "Claude Code";
+    return CLIENTS[c.client] || c.client;
   }
 
-  // A conversation is shown by its project directory and first prompt; the
-  // full prompt, directory and IDs are in the tooltip.
+  // A conversation is shown by its client and first prompt; the full prompt,
+  // directory and IDs are in the tooltip.
   function conversationCell(c) {
     var tip = [];
     if (c.prompt) tip.push(c.prompt);
@@ -405,8 +420,8 @@
     if (c.key) tip.push(translate("key_hint_short", c.key));
     return el("td", { class: "conv", title: tip.join("\n") }, [
       el("div", { class: "conv-title" }, [
-        c.agent ? el("span", { class: "tag", text: translate("subagent") }) : null,
-        el("span", { class: c.cwd ? "conv-dir" : "conv-dir mono", text: c.cwd ? baseName(c.cwd) : String(c.session || "").slice(0, 8) })
+        el("span", { class: "conv-client", text: clientName(c) }),
+        c.agent ? el("span", { class: "tag", text: translate("subagent") }) : null
       ]),
       el("div", { class: "cell-note conv-prompt", text: c.prompt || translate("no_prompt") })
     ]);
@@ -536,7 +551,7 @@
           ? el("td", { class: "num", text: fmtNum(usage.cache_read_input_tokens) })
           : el("td", { class: "num muted", title: translate("context_pending"), text: "—" }),
         el("td", { class: "num", text: c.until ? String(c.pings) : c.pings + " / " + maxPings }),
-        el("td", { "data-since": last ? last.getTime() : null, text: "—" }),
+        el("td", { class: "mono", "data-since": last ? last.getTime() : null, text: "—" }),
         el("td", { class: "mono", "data-next": next ? next.getTime() : null, text: "—" }),
         durationCell(c),
         el("td", { class: "actions" }, [

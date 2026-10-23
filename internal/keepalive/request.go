@@ -47,8 +47,10 @@ type request struct {
 	// system prompt and tools, which also differ between kinds of subagent.
 	Key   string
 	Model string
-	// Cwd and Prompt describe the conversation on the management page: the
-	// working directory and the first prompt.
+	// Client, Cwd and Prompt describe the conversation on the management
+	// page: the Claude Code entrypoint, the working directory and the first
+	// prompt.
+	Client    string
 	Cwd       string
 	Prompt    string
 	AuthID    string
@@ -97,6 +99,7 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 		Key:       conversationKey(session, agent, model, req.Body),
 		Model:     model,
 		RequestID: req.RequestID,
+		Client:    clientEntrypoint(req.Headers.Get("User-Agent")),
 		Cwd:       workingDirectory(req.Body),
 		Prompt:    firstPrompt(req.Body),
 	}

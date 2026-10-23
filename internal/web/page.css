@@ -84,6 +84,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Classes such as .btn set display, which would otherwise show hidden elements. */
+[hidden] { display: none !important; }
 html, body { background: var(--bg-secondary); }
 body {
   margin: 0;
@@ -207,7 +209,7 @@ td.result { white-space: normal; min-width: 180px; }
 /* Conversation cells: the project directory over the first prompt. */
 .truncate { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 .conv-title { display: flex; align-items: center; gap: 6px; font-weight: 600; max-width: 320px; }
-.conv-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.conv-client { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .conv-prompt { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .tag {
   flex: none; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 4px;
@@ -239,7 +241,6 @@ select:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, v
 .duration-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
 form label { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); }
 form label.inline-input { flex-direction: row; align-items: center; gap: 6px; font-weight: 500; color: var(--text-primary); }
-form label[hidden] { display: none; }
 .inline-input input { width: 72px; text-align: right; font-family: var(--font-mono); }
 .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 18px; margin-bottom: 10px; max-width: 900px; }
 .grid-4 input { font-family: var(--font-mono); }
