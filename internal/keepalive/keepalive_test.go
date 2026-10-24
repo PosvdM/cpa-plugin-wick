@@ -660,3 +660,139 @@ func TestStopConversation(t *testing.T) {
 		t.Fatalf("pings %d, want only the other conversation", h.pings())
 	}
 }
+
+// chat builds a request body with the given tools and messages, each
+// message a user text.
+func chat(system string, tools []string, messages ...string) []byte {
+	toolJSON := make([]string, len(tools))
+	for i, name := range tools {
+		toolJSON[i] = `{"name":"` + name + `"}`
+	}
+	msgJSON := make([]string, len(messages))
+	for i, text := range messages {
+		msgJSON[i] = `{"role":"user","content":"` + text + `"}`
+	}
+	return []byte(`{"model":"claude-opus-5-5","system":[{"type":"text","text":"` + system + `"}],"tools":[` + strings.Join(toolJSON, ",") + `],"messages":[` + strings.Join(msgJSON, ",") + `],"stream":true}`)
+}
+
+func TestNewToolSnuffsOutTheOldKey(t *testing.T) {
+	m, clock, h := newTestManager(testConfig())
+	m.Observe(intercept("r1", "sess", chat("main", []string{"Bash"}, "a", "b", "c")))
+	clock.Advance(10 * time.Second)
+	// A deferred tool loaded mid-conversation changes the key; the last
+	// message carried the cache marker and differs.
+	m.Observe(intercept("r2", "sess", chat("main", []string{"Bash", "WebFetch"}, "a", "b", "c2", "d", "e")))
+	convs := m.Status().Conversations
+	if len(convs) != 1 || convs[0].Key != short(conversationKey("sess", "", "claude-opus-5-5", chat("main", []string{"Bash", "WebFetch"}))) {
+		t.Fatalf("conversations %+v, want only the new key", convs)
+	}
+	if last := h.logs[len(h.logs)-1]; !strings.Contains(last, "stopped=replaced") {
+		t.Fatalf("log %q", last)
+	}
+	clock.Advance(time.Hour)
+	if h.pings() != testConfig().MaxPings {
+		t.Fatalf("pings %d, want one chain", h.pings())
+	}
+}
+
+func TestHelperRequestsKeepTheConversation(t *testing.T) {
+	m, _, _ := newTestManager(testConfig())
+	m.Observe(intercept("r1", "sess", chat("main", []string{"Bash"}, "a", "b", "c")))
+	// Same session, another system prompt, messages that do not continue.
+	m.Observe(intercept("r2", "sess", chat("helper", nil, "summarize", "b", "c", "d")))
+	// A request of one message cannot be compared and is kept.
+	m.Observe(intercept("r3", "other", chat("main", nil, "a")))
+	m.Observe(intercept("r4", "other", chat("main", []string{"Bash"}, "a", "b")))
+	// Another agent of the same session continues nothing of the main
+	// conversation, even with the same messages.
+	m.Observe(withAgent(intercept("r5", "sess", chat("main", []string{"Bash", "Read"}, "a", "b", "c", "d")), "a1"))
+	if n := len(m.Status().Conversations); n != 5 {
+		t.Fatalf("conversations %d, want all 5", n)
+	}
+}
+
+func returns(rec *fakeRecorder) []Event {
+	var out []Event
+	for _, ev := range rec.all() {
+		if ev.Kind == KindReturn {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func TestReturnAfterMaxPingsSaves(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxPings = 2
+	m, clock, _, rec := newRecordingManager(cfg)
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	clock.Advance(520 * time.Second) // pings at 260 s and 520 s, then snuffed out
+	if n := len(m.Status().Conversations); n != 0 {
+		t.Fatalf("conversations %d after max_pings", n)
+	}
+	for _, ev := range rec.all() {
+		if !ev.Returns {
+			t.Fatalf("ping without Returns: %+v", ev)
+		}
+	}
+	clock.Advance(200 * time.Second)
+	m.Observe(intercept("r2", "sess", body("main", "2")))
+	got := returns(rec)
+	if len(got) != 1 || !got[0].Saved || got[0].Pings != 2 || got[0].Idle != 720 || got[0].Context != 40003 || got[0].Ping != 0 {
+		t.Fatalf("returns %+v", got)
+	}
+	// The page reloads the history when a return is recorded.
+	if last := m.Status().LastEvent; !last.Equal(got[0].Time) {
+		t.Fatalf("last_event %v, want the return at %v", last, got[0].Time)
+	}
+	// The next round starts from the new request.
+	clock.Advance(100 * time.Second)
+	m.Observe(intercept("r3", "sess", body("main", "3")))
+	if len(returns(rec)) != 1 {
+		t.Fatal("a request without pings in its round was recorded as a return")
+	}
+}
+
+func TestReturnTooEarlyOrTooLateSavesNothing(t *testing.T) {
+	m, clock, _, rec := newRecordingManager(testConfig())
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	clock.Advance(280 * time.Second) // one ping at 260 s
+	m.Observe(intercept("r2", "sess", body("main", "2")))
+	if got := returns(rec); len(got) != 1 || got[0].Saved || got[0].Pings != 1 {
+		t.Fatalf("early return %+v, want not saved", got)
+	}
+
+	cfg := testConfig()
+	cfg.MaxPings = 1
+	m, clock, _, rec = newRecordingManager(cfg)
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	clock.Advance(260*time.Second + cacheTTL) // the cache of the only ping expired
+	m.Observe(intercept("r2", "sess", body("main", "2")))
+	if got := returns(rec); len(got) != 0 {
+		t.Fatalf("late return recorded: %+v", got)
+	}
+}
+
+func TestReplacedConversationHasNoReturn(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxPings = 1
+	m, clock, _, rec := newRecordingManager(cfg)
+	m.Observe(intercept("r1", "sess", chat("main", []string{"Bash"}, "a", "b")))
+	clock.Advance(400 * time.Second)
+	m.Observe(intercept("r2", "sess", chat("main", []string{"Bash", "WebFetch"}, "a", "b2", "c")))
+	if got := returns(rec); len(got) != 0 {
+		t.Fatalf("returns %+v, want none for a conversation under a new key", got)
+	}
+}
+
+func TestManualStopKeepsTheRoundForAReturn(t *testing.T) {
+	m, clock, _, rec := newRecordingManager(testConfig())
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	clock.Advance(260 * time.Second)
+	m.StopConversation(short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1"))))
+	clock.Advance(100 * time.Second)
+	m.Observe(intercept("r2", "sess", body("main", "2")))
+	if got := returns(rec); len(got) != 1 || !got[0].Saved {
+		t.Fatalf("returns %+v, want one saved", got)
+	}
+}

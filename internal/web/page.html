@@ -30,6 +30,44 @@
   <div id="notices"></div>
 
   <section class="card">
+    <h2 class="card-title"><span data-i18n="conversations">正在挑灯的对话</span><span id="conversation-count" class="count"></span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th data-i18n="col_conversation">对话</th><th data-i18n="col_model_account">模型 / 账号</th><th class="num" data-i18n="col_context">上下文</th><th class="num" data-i18n="col_pings">本轮挑灯</th><th data-i18n="col_idle">空闲</th><th data-i18n="col_next">下次挑灯</th><th data-i18n="col_duration">时长</th><th></th></tr>
+        </thead>
+        <tbody id="conversations"></tbody>
+      </table>
+    </div>
+    <p id="conversations-empty" class="empty" data-i18n="no_conversations" hidden>没有正在挑灯的对话。Claude Code 发出请求后，对话显示在这里。</p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2 class="card-title" data-i18n="events">挑灯记录</h2>
+      <div class="segmented" id="range-buttons" role="group" aria-label="范围" data-i18n-aria-label="range">
+        <button type="button" class="seg" data-value="24h" aria-pressed="true" data-i18n="range_24h">24 小时</button>
+        <button type="button" class="seg" data-value="7d" aria-pressed="false" data-i18n="range_7d">7 天</button>
+        <button type="button" class="seg" data-value="all" aria-pressed="false" data-i18n="range_all">全部</button>
+      </div>
+    </div>
+    <p id="totals" class="totals"></p>
+    <p id="totals-notes" class="hint totals-notes"></p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th data-i18n="col_time">最后挑灯</th><th data-i18n="col_conversation">对话</th><th data-i18n="col_model">模型</th><th class="num" data-i18n="col_rounds">挑灯</th><th class="num" data-i18n="col_context">上下文</th><th class="num" data-i18n="col_cost">花费</th><th class="num" data-i18n="col_saved">省下</th><th data-i18n="col_result">结果</th></tr>
+        </thead>
+        <tbody id="events"></tbody>
+      </table>
+    </div>
+    <p id="events-empty" class="empty" data-i18n="no_events" hidden>所选范围内没有挑灯记录。</p>
+    <button id="events-more" class="btn btn-ghost btn-sm events-more" type="button" hidden></button>
+    <p id="price-hint" class="hint"></p>
+    <p id="history-hint" class="hint"></p>
+  </section>
+
+  <section class="card">
     <h2 class="card-title" data-i18n="settings">设置</h2>
     <p class="hint settings-note" data-i18n="save_hint">修改后自动保存到 CPA 的 config.yaml，插件几秒内应用。</p>
     <form id="settings">
@@ -72,42 +110,6 @@
         <p class="hint" data-i18n="advanced_hint">每次挑灯的时刻在最短和最长间隔之间随机选取，最长间隔不超过 299 秒。请求体小于最小请求体的请求不挑灯，如生成标题等辅助请求。</p>
       </details>
     </form>
-  </section>
-
-  <section class="card">
-    <h2 class="card-title"><span data-i18n="conversations">正在挑灯的对话</span><span id="conversation-count" class="count"></span></h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th data-i18n="col_conversation">对话</th><th data-i18n="col_model_account">模型 / 账号</th><th class="num" data-i18n="col_context">上下文</th><th class="num" data-i18n="col_pings">已挑灯</th><th data-i18n="col_idle">空闲</th><th data-i18n="col_next">下次挑灯</th><th data-i18n="col_duration">时长</th><th></th></tr>
-        </thead>
-        <tbody id="conversations"></tbody>
-      </table>
-    </div>
-    <p id="conversations-empty" class="empty" data-i18n="no_conversations" hidden>没有正在挑灯的对话。Claude Code 发出请求后，对话显示在这里。</p>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <h2 class="card-title" data-i18n="events">挑灯记录</h2>
-      <div class="segmented" id="range-buttons" role="group" aria-label="范围" data-i18n-aria-label="range">
-        <button type="button" class="seg" data-value="24h" aria-pressed="true" data-i18n="range_24h">24 小时</button>
-        <button type="button" class="seg" data-value="7d" aria-pressed="false" data-i18n="range_7d">7 天</button>
-        <button type="button" class="seg" data-value="all" aria-pressed="false" data-i18n="range_all">全部</button>
-      </div>
-    </div>
-    <p id="totals" class="totals"></p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th data-i18n="col_time">最后挑灯</th><th data-i18n="col_conversation">对话</th><th data-i18n="col_model">模型</th><th class="num" data-i18n="col_ping">次数</th><th class="num" data-i18n="col_context">上下文</th><th class="num" data-i18n="col_read">缓存读取</th><th class="num" data-i18n="col_write">缓存写入</th><th data-i18n="col_result">结果</th></tr>
-        </thead>
-        <tbody id="events"></tbody>
-      </table>
-    </div>
-    <p id="events-empty" class="empty" data-i18n="no_events" hidden>所选范围内没有挑灯记录。</p>
-    <button id="events-more" class="btn btn-ghost btn-sm events-more" type="button" hidden></button>
-    <p id="history-hint" class="hint"></p>
   </section>
 </main>
 <div id="toast" class="toast" hidden></div>

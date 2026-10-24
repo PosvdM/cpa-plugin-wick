@@ -205,6 +205,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--text-primary) 3%, trans
 th.num { text-align: right; }
 td.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 td.actions { text-align: right; }
+td.num.words { font-family: inherit; }
 td.result { white-space: normal; min-width: 180px; }
 td.result .badge + .badge { margin-left: 6px; }
 .cell-note { margin-top: 2px; font-size: 11.5px; color: var(--text-tertiary); }
@@ -226,16 +227,59 @@ select:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, v
 .duration-input { width: 88px; padding: 4px 8px; font-family: var(--font-mono); text-align: right; }
 .result-note { margin-left: 8px; font-size: 12px; color: var(--text-secondary); }
 .totals { margin: -6px 0 12px; font-size: 13px; color: var(--text-secondary); }
+.hint.totals-notes { margin: -8px 0 12px; }
+.totals-notes:empty { display: none; }
+/* History rows open their rounds on click. */
+.conv-row { cursor: pointer; }
+.conv-row:focus-visible { outline: none; }
+.conv-row:focus-visible td { box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--primary-color) 10%, transparent); }
+.conv-row .chevron {
+  display: inline-block; width: 12px; margin-right: 4px; color: var(--text-tertiary); text-align: center;
+  font-size: 15px; line-height: 1; transition: transform 0.15s ease;
+}
+.conv-row[aria-expanded="true"] .chevron { transform: rotate(90deg); }
+tbody tr.detail-row:hover td { background: transparent; }
+tr.detail-row > td { padding: 0 10px 12px 34px; }
+table.rounds { font-size: 12.5px; background: var(--bg-secondary); border-radius: 8px; }
+table.rounds th { padding: 8px 10px 6px; }
+table.rounds td { padding: 6px 10px; }
 .events-more { margin-top: 8px; }
 .card > .hint:last-child { margin-top: 12px; }
+#price-hint { margin-top: 12px; }
+#price-hint:empty { display: none; }
+#price-hint:not(:empty) + .hint { margin-top: 4px; }
 
 /* Settings */
-.segmented { display: inline-flex; flex-wrap: wrap; padding: 3px; gap: 2px; border-radius: 9px; background: var(--bg-tertiary); border: 1px solid var(--border-color); }
-.seg {
-  font: inherit; font-size: 12.5px; font-weight: 600; padding: 4px 12px; border-radius: 6px; border: 0; cursor: pointer;
-  background: transparent; color: var(--text-secondary);
+/* Segmented buttons: the thumb is placed under the pressed button by
+   placeThumb() in page.js, which measures it, since the buttons differ in
+   width and may wrap. It slides with an overshoot and squashes on arrival,
+   like the mode switches of Lamplighter. */
+.segmented {
+  position: relative; display: inline-flex; flex-wrap: wrap; padding: 3px; gap: 2px; border-radius: 9px;
+  background: var(--bg-tertiary); border: 1px solid var(--border-color);
 }
-.seg[aria-pressed="true"] { background: var(--bg-secondary); color: var(--text-primary); box-shadow: var(--shadow); }
+.seg-thumb {
+  position: absolute; left: 0; top: 0; width: var(--thumb-w, 0); height: var(--thumb-h, 0); border-radius: 6px;
+  background: var(--primary-color); box-shadow: var(--shadow); pointer-events: none;
+  translate: var(--thumb-x, 0) var(--thumb-y, 0);
+  transition: translate 480ms cubic-bezier(0.34, 1.7, 0.5, 1), width 480ms cubic-bezier(0.34, 1.7, 0.5, 1), height 480ms cubic-bezier(0.34, 1.7, 0.5, 1);
+}
+.segmented.placing .seg-thumb { transition: none; }
+.seg-thumb.bounce { animation: seg-squash 520ms ease-out; }
+@keyframes seg-squash {
+  0% { scale: 1 1; }
+  25% { scale: 1.14 0.86; }
+  50% { scale: 0.94 1.08; }
+  75% { scale: 1.03 0.97; }
+  100% { scale: 1 1; }
+}
+.seg {
+  position: relative; font: inherit; font-size: 12.5px; font-weight: 600; padding: 4px 12px; border-radius: 6px; border: 0; cursor: pointer;
+  background: transparent; color: var(--text-secondary); white-space: nowrap;
+  transition: color 200ms ease, scale 300ms cubic-bezier(0.34, 1.7, 0.5, 1);
+}
+.seg[aria-pressed="true"] { color: var(--primary-contrast); scale: 1.06; }
+.seg:active { scale: 0.92; }
 .hint, form .hint { font-size: 12px; font-weight: 400; color: var(--text-tertiary); margin: 0; }
 .hint.settings-note { margin: -8px 0 14px; }
 .field { display: flex; flex-direction: column; gap: 8px; }
@@ -263,6 +307,8 @@ form label.inline-input { flex-direction: row; align-items: center; gap: 6px; fo
 .advanced[open] > summary { margin-bottom: 12px; }
 @media (prefers-reduced-motion: reduce) {
   .advanced > summary::before { transition: none; }
+  .seg-thumb, .seg { transition: none; } .seg-thumb.bounce { animation: none; }
+  .conv-row .chevron { transition: none; }
 }
 
 /* Key prompt */

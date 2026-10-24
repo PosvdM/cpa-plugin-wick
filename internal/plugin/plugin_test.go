@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,12 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
+
+func TestMain(m *testing.M) {
+	// The plugin fetches prices when registered; tests do not reach out.
+	priceSource = "http://127.0.0.1:1/pricing.md"
+	os.Exit(m.Run())
+}
 
 type nopHost struct{}
 
@@ -166,6 +173,8 @@ func TestHistoryRoute(t *testing.T) {
 		p.history.Append(keepalive.Event{Time: now.Add(-time.Duration(i) * time.Hour), Key: key, Ping: 1, Usage: &keepalive.Usage{CacheReadTokens: 10}})
 	}
 	p.history.Append(keepalive.Event{Time: now.AddDate(0, 0, -3), Key: "d", Ping: 9})
+	// A return is not a ping.
+	p.history.Append(keepalive.Event{Time: now.Add(-time.Minute), Key: "a", Kind: keepalive.KindReturn, Returns: true, Pings: 1})
 	query := func(q url.Values) (int, historyResponse) {
 		payload, _ := json.Marshal(pluginapi.ManagementRequest{Method: "GET", Path: apiBase + "/history", Query: q})
 		var env struct{ Result pluginapi.ManagementResponse }
@@ -175,7 +184,7 @@ func TestHistoryRoute(t *testing.T) {
 		return env.Result.StatusCode, got
 	}
 	code, got := query(url.Values{"limit": {"2"}})
-	if code != http.StatusOK || got.Range != "24h" || got.Count != 3 || got.Totals.Pings != 4 || got.Totals.CacheReadTokens != 40 ||
+	if code != http.StatusOK || got.Range != "24h" || got.Count != 3 || got.Totals.Pings != 4 || got.Totals.CacheReadTokens != 40 || got.Totals.Rounds != 4 ||
 		len(got.Conversations) != 2 || got.Conversations[0].Key != "a" || got.Conversations[0].Pings != 2 || got.Conversations[1].Key != "b" {
 		t.Fatalf("24h %d %+v", code, got)
 	}

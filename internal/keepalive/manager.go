@@ -19,6 +19,7 @@ import (
 	"github.com/PosvdM/cpa-plugin-wick/internal/config"
 	"github.com/PosvdM/cpa-plugin-wick/internal/host"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -47,7 +48,11 @@ const (
 	stopTTL1h      = "ttl_1h"
 	stopManual     = "manual"
 	stopExpired    = "expired"
+	stopReplaced   = "replaced"
 )
+
+// KindReturn marks the event written when a request ends a round of pings.
+const KindReturn = "return"
 
 // Clock abstracts time so that tests can drive the scheduler.
 type Clock interface {
@@ -99,13 +104,27 @@ type Manager struct {
 	// gen numbers schedules across all conversations, so that a ping still
 	// in flight for a removed conversation cannot match a new one.
 	gen uint64
-	// lastPing is the start of the latest ping, so that the page knows when
-	// to reload the history.
-	lastPing time.Time
+	// lastEvent is the time of the latest event recorded, a ping or a
+	// return, so that the page knows when to reload the history.
+	lastEvent time.Time
 	// store saves the conversations so that they survive a restart of CPA.
 	// restored is set once the saved conversations have been loaded.
 	store    *convStore
 	restored bool
+	// ended keeps the rounds of conversations snuffed out while their cache
+	// may still be warm, until it expires, so that a request coming back in
+	// that time is recorded as a return.
+	ended map[string]round
+}
+
+// round is the state of a conversation's round of pings that a return is
+// judged by.
+type round struct {
+	lastRequest time.Time
+	lastRead    time.Time
+	pings       int
+	// context is the input of the round's last successful ping.
+	context int64
 }
 
 type conversation struct {
@@ -127,7 +146,8 @@ type conversation struct {
 	hours float64
 }
 
-// Event is the result of one ping.
+// Event is the result of one ping, or with Kind KindReturn, the request
+// that ended a round of pings.
 type Event struct {
 	Time    time.Time `json:"time"`
 	Session string    `json:"session"`
@@ -141,6 +161,19 @@ type Event struct {
 	Usage   *Usage    `json:"usage,omitempty"`
 	Error   string    `json:"error,omitempty"`
 	Stopped string    `json:"stopped,omitempty"`
+	Kind    string    `json:"kind,omitempty"`
+	// Returns is set on every event of versions that record returns, so
+	// that a round without one can be judged as wasted.
+	Returns bool `json:"returns,omitempty"`
+	// Saved, Idle, Context and Pings describe a return: whether it came
+	// back within the cache's lifetime after the last successful ping and
+	// at least that long after the previous request, the seconds since
+	// the previous request, the input of the round's last successful ping
+	// and the pings of the round.
+	Saved   bool  `json:"saved,omitempty"`
+	Idle    int64 `json:"idle,omitempty"`
+	Context int64 `json:"context,omitempty"`
+	Pings   int   `json:"pings,omitempty"`
 }
 
 // New creates a Manager with the default config.
@@ -154,6 +187,7 @@ func New(opts Options) *Manager {
 		cfg:      config.Default(),
 		convs:    make(map[string]*conversation),
 		streams:  make(map[string]struct{}),
+		ended:    make(map[string]round),
 	}
 	if m.clock == nil {
 		m.clock = realClock{}
@@ -176,7 +210,7 @@ func (m *Manager) Configure(cfg config.Config) {
 	m.stopped = false
 	for key, c := range m.convs {
 		if m.doneLocked(c) {
-			m.removeLocked(key)
+			m.retireLocked(key, c)
 			m.logLocked("info", "limit lowered, keep-alive stopped", c.req, c.pings, stopMaxPings)
 		}
 	}
@@ -241,6 +275,7 @@ func (m *Manager) Stop() {
 	for key := range m.convs {
 		m.removeLocked(key)
 	}
+	clear(m.ended)
 	streams := make([]string, 0, len(m.streams))
 	for id := range m.streams {
 		streams = append(streams, id)
@@ -278,13 +313,36 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) {
 		return
 	}
 
-	now := m.clock.Now()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.stopped || m.limitLocked(req) == 0 {
-		return
+	// Taken under the lock, so that a return is never earlier than the
+	// start of a ping counted before it.
+	ret, returned := m.observeLocked(req, m.clock.Now())
+	m.mu.Unlock()
+	// A short line appended to a file, only when a request ends a round of
+	// pings, that is after at least one idle interval.
+	if returned && m.recorder != nil {
+		if err := m.recorder.Append(ret); err != nil {
+			m.host.Log("warn", "wick: write ping history: "+err.Error(), nil)
+		}
 	}
+}
+
+// observeLocked tracks req and returns the event to record when req ends a
+// round of pings.
+func (m *Manager) observeLocked(req request, now time.Time) (Event, bool) {
+	if m.stopped || m.limitLocked(req) == 0 {
+		return Event{}, false
+	}
+	m.pruneEndedLocked(now)
+	var ret Event
+	returned := false
 	c, ok := m.convs[req.Key]
+	if r, found := m.ended[req.Key]; found && !ok {
+		ret, returned = m.returnLocked(req, now, r), true
+	} else if ok && c.pings > 0 {
+		ret, returned = m.returnLocked(req, now, roundOf(c)), true
+	}
+	delete(m.ended, req.Key)
 	if ok {
 		// Conversations that started while the main conversation waited for
 		// its last response are its subagents. A new request from the main
@@ -302,6 +360,7 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) {
 		}
 		c.until, c.hours = time.Time{}, 0
 	} else {
+		m.replaceLocked(req)
 		if len(m.convs) >= maxConversations {
 			m.evictOldestLocked()
 		}
@@ -315,6 +374,111 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) {
 	m.gen++
 	c.gen = m.gen
 	m.scheduleLocked(req.Key, c, now)
+	return ret, returned
+}
+
+// roundOf returns the round of pings of c since its last request.
+func roundOf(c *conversation) round {
+	r := round{lastRequest: c.lastRequest, lastRead: c.lastRead, pings: c.pings}
+	if c.lastUsage != nil && c.lastRead.After(c.lastRequest) {
+		r.context = c.lastUsage.CacheReadTokens + c.lastUsage.CacheCreationTokens + c.lastUsage.InputTokens
+	}
+	return r
+}
+
+// returnLocked judges a request that ends round r. The pings saved a cache
+// write when the request came back while the cache of the last successful
+// ping was alive, and at least the cache's lifetime after the previous
+// request, so that the cache would have expired without them.
+func (m *Manager) returnLocked(req request, now time.Time, r round) Event {
+	idle := now.Sub(r.lastRequest)
+	saved := now.Sub(r.lastRead) < cacheTTL && idle >= cacheTTL
+	if now.After(m.lastEvent) {
+		m.lastEvent = now
+	}
+	ev := Event{
+		Time:    now,
+		Session: short(req.Session),
+		Key:     short(req.Key),
+		Model:   req.Model,
+		Agent:   req.Agent != "",
+		Client:  req.Client,
+		Cwd:     req.Cwd,
+		Prompt:  truncate(req.Prompt, maxEventPromptRunes),
+		Kind:    KindReturn,
+		Returns: true,
+		Saved:   saved,
+		Idle:    int64(idle / time.Second),
+		Context: r.context,
+		Pings:   r.pings,
+	}
+	message := "returned in time, the pings saved a cache write"
+	if !saved {
+		message = "returned, the pings saved nothing"
+	}
+	m.logLocked("info", fmt.Sprintf("%s idle=%ds", message, ev.Idle), req, r.pings, "")
+	return ev
+}
+
+// retireLocked removes a conversation whose cache may stay warm for a
+// while and keeps its round until the cache expires, so that a request
+// coming back in that time is judged as a return.
+func (m *Manager) retireLocked(key string, c *conversation) {
+	if c.pings > 0 {
+		m.ended[key] = roundOf(c)
+	}
+	m.removeLocked(key)
+}
+
+// pruneEndedLocked forgets the ended rounds whose cache has expired.
+func (m *Manager) pruneEndedLocked(now time.Time) {
+	for key, r := range m.ended {
+		if !now.Before(r.lastRead.Add(cacheTTL)) {
+			delete(m.ended, key)
+		}
+	}
+}
+
+// replaceLocked snuffs out the conversations that req continues under a
+// new key: same session and agent, and req's messages open with the old
+// request's messages, all but the last one, which Claude Code extends with
+// the next turn, unchanged. The key changes when tools are added, such as
+// MCP servers or deferred tools loaded mid-conversation, or when the system
+// prompt or the model changes. The cache is matched from the start, tools
+// first, so the old conversation's cache can no longer be read. Comparing
+// the messages spares Claude Code's helper requests, which share the
+// session ID but do not continue the conversation.
+func (m *Manager) replaceLocked(req request) {
+	var messages []gjson.Result
+	parsed := false
+	for key, other := range m.convs {
+		if other.req.Session != req.Session || other.req.Agent != req.Agent {
+			continue
+		}
+		if !parsed {
+			messages, parsed = gjson.GetBytes(req.Body, "messages").Array(), true
+		}
+		if continues(other.req.Body, messages) {
+			m.removeLocked(key)
+			m.logLocked("info", "conversation continued with other tools, system prompt or model, keep-alive stopped", other.req, other.pings, stopReplaced)
+		}
+	}
+}
+
+// continues reports whether messages open with the messages of the request
+// body old, all but the last one, unchanged. A conversation of one message
+// is never matched, since none of it can be compared.
+func continues(old []byte, messages []gjson.Result) bool {
+	before := gjson.GetBytes(old, "messages").Array()
+	if len(before) < 2 || len(messages) < len(before) {
+		return false
+	}
+	for i := 0; i < len(before)-1; i++ {
+		if before[i].Raw != messages[i].Raw {
+			return false
+		}
+	}
+	return true
 }
 
 // Complete handles the end of an intercepted request. A failed request
@@ -357,7 +521,7 @@ func (m *Manager) SetDuration(key string, hours float64) bool {
 		} else {
 			c.until, c.hours = time.Time{}, 0
 			if c.pings >= m.limitLocked(c.req) {
-				m.removeLocked(full)
+				m.retireLocked(full, c)
 				m.logLocked("info", "duration reset from the management page", c.req, c.pings, stopMaxPings)
 			}
 		}
@@ -375,7 +539,7 @@ func (m *Manager) StopConversation(key string) bool {
 	found := false
 	for full, c := range m.convs {
 		if short(full) == key {
-			m.removeLocked(full)
+			m.retireLocked(full, c)
 			m.logLocked("info", "keep-alive stopped from the management page", c.req, c.pings, stopManual)
 			found = true
 		}
@@ -441,7 +605,7 @@ func (m *Manager) evictOldestLocked() {
 		}
 	}
 	if c, ok := m.convs[oldest]; ok {
-		m.removeLocked(oldest)
+		m.retireLocked(oldest, c)
 		m.logLocked("info", "too many conversations, keep-alive stopped", c.req, c.pings, stopEvicted)
 	}
 }
@@ -449,11 +613,10 @@ func (m *Manager) evictOldestLocked() {
 // fire sends one ping. gen guards against a request that arrived after the
 // timer was set.
 func (m *Manager) fire(key string, gen uint64) {
-	req, n, ok := m.beginPing(key, gen, m.enabled())
+	req, n, start, ok := m.beginPing(key, gen, m.enabled())
 	if !ok {
 		return
 	}
-	start := m.clock.Now()
 	usage, err := m.ping(req)
 	event := m.finishPing(key, gen, req, n, start, usage, err)
 	if m.recorder != nil {
@@ -465,20 +628,22 @@ func (m *Manager) fire(key string, gen uint64) {
 
 // beginPing counts the ping and returns the request to replay, or ok=false
 // when the conversation changed or the plugin is disabled.
-func (m *Manager) beginPing(key string, gen uint64, enabled bool) (request, int, bool) {
+func (m *Manager) beginPing(key string, gen uint64, enabled bool) (request, int, time.Time, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.convs[key]
 	if !ok || c.gen != gen || m.stopped {
-		return request{}, 0, false
+		return request{}, 0, time.Time{}, false
 	}
 	if !enabled {
 		m.removeLocked(key)
 		m.logLocked("info", "plugin disabled, keep-alive stopped", c.req, c.pings, stopDisabled)
-		return request{}, 0, false
+		return request{}, 0, time.Time{}, false
 	}
 	c.pings++
-	return c.req, c.pings, true
+	// The start is taken under the lock, so that a request arriving after
+	// the ping was counted is recorded after it.
+	return c.req, c.pings, m.clock.Now(), true
 }
 
 // finishPing applies the result of a ping to its conversation and returns
@@ -497,9 +662,10 @@ func (m *Manager) finishPing(key string, gen uint64, req request, n int, start t
 		Prompt:  truncate(req.Prompt, maxEventPromptRunes),
 		Ping:    n,
 		Usage:   usage,
+		Returns: true,
 	}
-	if start.After(m.lastPing) {
-		m.lastPing = start
+	if start.After(m.lastEvent) {
+		m.lastEvent = start
 	}
 	current, ok := m.convs[key]
 	stillCurrent := ok && current.gen == gen && !m.stopped
@@ -527,10 +693,10 @@ func (m *Manager) finishPing(key string, gen uint64, req request, n int, start t
 			switch {
 			case !current.until.IsZero() && !start.Add(cacheTTL).Before(current.until):
 				event.Stopped = stopUntil
-				m.removeLocked(key)
+				m.retireLocked(key, current)
 			case current.until.IsZero() && n >= m.limitLocked(req):
 				event.Stopped = stopMaxPings
-				m.removeLocked(key)
+				m.retireLocked(key, current)
 			default:
 				m.scheduleLocked(key, current, start)
 			}
@@ -662,8 +828,9 @@ type ConversationStatus struct {
 type Status struct {
 	Config        config.Config        `json:"config"`
 	Conversations []ConversationStatus `json:"conversations"`
-	// LastPing is the start of the latest ping since the plugin was loaded.
-	LastPing time.Time `json:"last_ping"`
+	// LastEvent is the time of the latest ping or return recorded since the
+	// plugin was loaded.
+	LastEvent time.Time `json:"last_event"`
 }
 
 // Status returns the tracked conversations.
@@ -673,7 +840,7 @@ func (m *Manager) Status() Status {
 	status := Status{
 		Config:        m.cfg,
 		Conversations: make([]ConversationStatus, 0, len(m.convs)),
-		LastPing:      m.lastPing,
+		LastEvent:     m.lastEvent,
 	}
 	for _, c := range m.convs {
 		cs := ConversationStatus{

@@ -19,8 +19,10 @@
   var historyRange = "24h";
   var historyLimit = EVENTS_SHOWN;
   var historyData = null;
-  // last_ping of the status the history was loaded for.
-  var lastPingSeen = null;
+  // last_event of the status the history was loaded for.
+  var lastEventSeen = null;
+  // Reloads the history when its earliest pending round gets a result.
+  var pendingTimer = null;
   var refreshTimer = null;
   var statusTimer = null;
 
@@ -114,13 +116,13 @@
       retention_invalid: "记录保留天数须在 1 到 3650 之间",
       saved: "已保存", save_failed: "保存失败：{0}", load_failed: "加载失败：{0}",
       conversations: "正在挑灯的对话",
-      col_conversation: "对话", col_model: "模型", col_model_account: "模型 / 账号", col_context: "上下文", col_pings: "已挑灯",
+      col_conversation: "对话", col_model: "模型", col_model_account: "模型 / 账号", col_context: "上下文", col_pings: "本轮挑灯",
       col_idle: "空闲", col_next: "下次挑灯", col_duration: "时长",
       no_conversations: "没有正在挑灯的对话。Claude Code 发出请求后，对话显示在这里。",
       subagent: "子代理", no_prompt: "（没有文字）",
       session_hint: "会话 {0}", key_hint_short: "对话键 {0}", directory_hint: "目录 {0}",
       context_pending: "首次挑灯后显示",
-      pings_round: "本轮 {0} / {1}", pings_total_hint: "共挑灯 {0} 次，本轮 {1} 次。对话收到新请求后开始新的一轮。",
+      pings_total: "累计 {0}", pings_total_hint: "共挑灯 {0} 次，本轮 {1} 次。对话收到新请求后开始新的一轮。",
       pinging: "挑灯中",
       duration_default: "默认", duration_hours: "{0} 小时", duration_custom_option: "自定义…",
       duration_until: "到 {0}", duration_input: "小时数",
@@ -128,18 +130,26 @@
       duration_invalid: "请填写 0 到 24 之间的小时数",
       stop: "熄灭", stopped_one: "已熄灭", stop_failed: "熄灭失败：{0}",
       events: "挑灯记录", range: "范围", range_24h: "24 小时", range_7d: "7 天", range_all: "全部",
-      totals_24h: "近 24 小时共挑灯 {0} 次，失败 {1} 次，读取缓存 {2} token，写入缓存 {3} token。",
-      totals_7d: "近 7 天共挑灯 {0} 次，失败 {1} 次，读取缓存 {2} token，写入缓存 {3} token。",
-      totals_all: "保留的 {4} 天内共挑灯 {0} 次，失败 {1} 次，读取缓存 {2} token，写入缓存 {3} token。",
-      col_time: "最后挑灯", col_ping: "次数", col_read: "缓存读取", col_write: "缓存写入", col_result: "结果",
+      range_label_24h: "近 24 小时", range_label_7d: "近 7 天", range_label_all: "保留的 {0} 天内",
+      totals_priced: "{0}挑灯 {1}（{2}），花费 {3}；{4}等到你回来，省下 {5}；{6}。",
+      totals_plain: "{0}挑灯 {1}（{2}），{3}等到你回来。",
+      net_saved: "净省 {0}", net_cost: "净耗 {0}",
+      totals_failed: "其中 {0}失败。", totals_pending: "{0}仍在挑灯，未计入净值。",
+      totals_unknown: "{0}是 v0.5.0 之前的记录，没有记下你是否回来，只显示轮次，不计入金额。",
+      totals_unpriced: "{0}的模型在定价页上找不到价格，不计入金额。",
+      n_pings: "{0} 次", n_ping: "{0} 次", n_rounds: "{0} 轮", n_round: "{0} 轮",
+      col_time: "最后挑灯", col_rounds: "挑灯", col_cost: "花费", col_saved: "省下", col_result: "结果",
+      col_round_time: "时间", col_round_pings: "本轮次数", col_read: "缓存读取",
+      rounds_pings: "{0} · {1}", expand_hint: "点击查看每一轮",
       first_ping_hint: "范围内首次挑灯 {0}", context_hint: "最后一次挑灯的输入 token 数",
       no_events: "所选范围内没有挑灯记录。",
       history_hint: "记录和正在挑灯的对话保存在 {0}，记录保留 {1} 天。",
-      result_hit: "命中", result_miss: "未命中", result_error: "失败", result_count: "{0} {1}", still_lit: "挑灯中",
-      stop_max_pings: "达到次数上限，已熄灭",
-      stop_until: "到达单独设置的时长，已熄灭",
-      stop_error: "已熄灭",
-      stop_cache_miss: "缓存已过期，已熄灭",
+      price_hint: "金额按 Anthropic 官方定价页的 API 价格计算，价格更新于 {0}。订阅（如 Pro）的额度与 API 价格不完全对应，金额只能作为比例参考。",
+      price_stale: "最近一次更新价格失败：{0}",
+      price_none: "尚未取得 API 价格，暂不显示金额。", price_error: "获取失败：{0}",
+      result_saved: "省下", result_saved_amount: "省下 {0}", result_wasted: "白挑", result_pending: "挑灯中",
+      result_miss: "未命中", result_failed: "失败", result_unknown: "未记录", result_count: "{0} {1}",
+      round_back: "空闲 {0} 后回来",
       events_more: "再显示 {0} 个对话",
       seconds: "{0} 秒", minutes_seconds: "{0} 分 {1} 秒", minutes: "{0} 分钟", hours_minutes: "{0} 小时 {1} 分"
     },
@@ -168,13 +178,13 @@
       retention_invalid: "Keep history for 1 to 3650 days",
       saved: "Saved", save_failed: "Save failed: {0}", load_failed: "Load failed: {0}",
       conversations: "Conversations kept lit",
-      col_conversation: "Conversation", col_model: "Model", col_model_account: "Model / Account", col_context: "Context", col_pings: "Pings",
+      col_conversation: "Conversation", col_model: "Model", col_model_account: "Model / Account", col_context: "Context", col_pings: "This round",
       col_idle: "Idle", col_next: "Next ping", col_duration: "Keep lit",
       no_conversations: "No conversations are kept lit. Conversations appear here after Claude Code sends a request.",
       subagent: "Subagent", no_prompt: "(no text)",
       session_hint: "Session {0}", key_hint_short: "Conversation key {0}", directory_hint: "Directory {0}",
       context_pending: "Shown after the first ping",
-      pings_round: "This round {0} / {1}", pings_total_hint: "{0} pings in all, {1} in this round. A new request starts a new round.",
+      pings_total: "{0} in all", pings_total_hint: "{0} pings in all, {1} in this round. A new request starts a new round.",
       pinging: "Pinging",
       duration_default: "Default", duration_hours: "{0} h", duration_custom_option: "Custom…",
       duration_until: "Until {0}", duration_input: "Hours",
@@ -182,18 +192,26 @@
       duration_invalid: "Enter a number of hours from 0 to 24",
       stop: "Snuff out", stopped_one: "Snuffed out", stop_failed: "Could not snuff out: {0}",
       events: "Ping history", range: "Range", range_24h: "24 hours", range_7d: "7 days", range_all: "All",
-      totals_24h: "Last 24 hours: {0} pings, {1} failed, {2} cached tokens read, {3} written.",
-      totals_7d: "Last 7 days: {0} pings, {1} failed, {2} cached tokens read, {3} written.",
-      totals_all: "All {4} days kept: {0} pings, {1} failed, {2} cached tokens read, {3} written.",
-      col_time: "Last ping", col_ping: "Pings", col_read: "Cache read", col_write: "Cache write", col_result: "Result",
+      range_label_24h: "Last 24 hours", range_label_7d: "Last 7 days", range_label_all: "All {0} days kept",
+      totals_priced: "{0}: {1} in {2}, costing {3}; you came back in time for {4}, saving {5}; {6}.",
+      totals_plain: "{0}: {1} in {2}; you came back in time for {3}.",
+      net_saved: "net saving {0}", net_cost: "net cost {0}",
+      totals_failed: "{0} failed.", totals_pending: "{0} still lit, not counted in the net.",
+      totals_unknown: "{0} recorded before v0.5.0, which did not record whether you came back, are shown without amounts.",
+      totals_unpriced: "{0} with a model missing from the pricing page are shown without amounts.",
+      n_pings: "{0} pings", n_ping: "{0} ping", n_rounds: "{0} rounds", n_round: "{0} round",
+      col_time: "Last ping", col_rounds: "Pings", col_cost: "Cost", col_saved: "Saved", col_result: "Result",
+      col_round_time: "Time", col_round_pings: "Pings", col_read: "Cache read",
+      rounds_pings: "{0} · {1}", expand_hint: "Click to show each round",
       first_ping_hint: "First ping in the range {0}", context_hint: "Input tokens of the last ping",
       no_events: "No pings in this range.",
       history_hint: "The history and the conversations kept lit are saved in {0}; the history is kept for {1} days.",
-      result_hit: "Hit", result_miss: "Miss", result_error: "Failed", result_count: "{0} {1}", still_lit: "Still lit",
-      stop_max_pings: "Reached the ping limit, snuffed out",
-      stop_until: "Reached the time set for this conversation, snuffed out",
-      stop_error: "Snuffed out",
-      stop_cache_miss: "Cache had expired, snuffed out",
+      price_hint: "Amounts use the API prices on Anthropic's pricing page, updated {0}. Subscription usage, such as Pro, does not map exactly to API prices, so take the amounts as proportions.",
+      price_stale: "The last price update failed: {0}",
+      price_none: "API prices are not available yet, so no amounts are shown.", price_error: "Fetching failed: {0}",
+      result_saved: "Saved", result_saved_amount: "Saved {0}", result_wasted: "Wasted", result_pending: "Lit",
+      result_miss: "Miss", result_failed: "Failed", result_unknown: "Not recorded", result_count: "{0} {1}",
+      round_back: "back after {0} idle",
       events_more: "Show {0} more conversations",
       seconds: "{0} s", minutes_seconds: "{0} min {1} s", minutes: "{0} min", hours_minutes: "{0} h {1} min"
     }
@@ -249,6 +267,7 @@
       renderStatus();
       renderDurationHint();
     }
+    renderEvents();
   }
 
   // ---- Management API ----
@@ -365,6 +384,17 @@
 
   function fmtNum(n) {
     return Number(n || 0).toLocaleString(lang === "zh" ? "zh-CN" : "en-US");
+  }
+
+  function count(n, one, many) {
+    return translate(n === 1 ? one : many, fmtNum(n));
+  }
+
+  // Dollar amounts at API prices, with two decimals.
+  function fmtMoney(v) {
+    if (v === null || v === undefined) return "—";
+    if (v !== 0 && Math.abs(v) < 0.005) return "<$0.01";
+    return "$" + Math.abs(v).toFixed(2);
   }
 
   function badge(kind, text) {
@@ -559,8 +589,8 @@
           ? el("td", { class: "num", text: fmtNum(contextTokens(usage)) })
           : el("td", { class: "num muted", title: translate("context_pending"), text: "—" }),
         el("td", { class: "num", title: translate("pings_total_hint", c.total_pings || 0, c.pings) }, [
-          el("div", { text: String(c.total_pings || 0) }),
-          c.until ? null : el("div", { class: "cell-note", text: translate("pings_round", c.pings, c.max_pings) })
+          el("div", { text: c.until ? String(c.pings) : c.pings + " / " + c.max_pings }),
+          el("div", { class: "cell-note", text: translate("pings_total", c.total_pings || 0) })
         ]),
         el("td", { class: "mono", "data-since": last ? last.getTime() : null, text: "—" }),
         el("td", { class: "mono", "data-next": next ? next.getTime() : null, text: "—" }),
@@ -578,65 +608,205 @@
     return (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.input_tokens || 0);
   }
 
-  // The outcome of a conversation's pings: one badge when they all ended
-  // alike, otherwise a badge with the count of each outcome, followed by
-  // "still lit" or how the last ping ended.
-  function historyResult(c, lit) {
-    var outcomes = [["success", "result_hit", c.hits], ["warning", "result_miss", c.misses], ["failure", "result_error", c.failed]]
-      .filter(function (o) { return o[2] > 0; });
-    var parts = outcomes.map(function (o) {
-      return badge(o[0], outcomes.length > 1 ? translate("result_count", translate(o[1]), o[2]) : translate(o[1]));
+  // Round results, in the order their badges are shown, with the badge
+  // style of each.
+  var RESULTS = [["saved", "success"], ["pending", "muted"], ["wasted", "warning"], ["miss", "warning"], ["failed", "failure"], ["unknown", "muted"]];
+  var RESULT_KIND = {};
+  RESULTS.forEach(function (r) { RESULT_KIND[r[0]] = r[1]; });
+
+  // Conversations of the history whose rounds are shown, by key.
+  var expanded = {};
+
+  function historyId(c) { return c.key || "session:" + c.session; }
+
+  // Amounts are shown once prices were fetched, for conversations with a
+  // round that has a result and a price.
+  function pricesReady() {
+    return !!(historyData && historyData.prices && parseTime(historyData.prices.fetched));
+  }
+
+  function pricedRounds(t) {
+    var results = t.results || {};
+    return (t.rounds || 0) - (results.unknown || 0) - (t.unpriced || 0);
+  }
+
+  // The rounds of a conversation by result: a badge for each result, with
+  // the count when there is more than one round of it, and the error of a
+  // last failed ping.
+  function historyResult(c) {
+    var results = c.results || {};
+    var parts = RESULTS.filter(function (r) { return results[r[0]] > 0; }).map(function (r) {
+      var label = translate("result_" + r[0]);
+      return badge(r[1], results[r[0]] > 1 ? translate("result_count", label, results[r[0]]) : label);
     });
-    var notes = [];
-    if (lit) notes.push(translate("still_lit"));
-    else {
-      if (c.last_error) notes.push(c.last_error);
-      if (c.last_stopped) notes.push(translate("stop_" + c.last_stopped));
+    if (c.last_error && c.detail && c.detail.length && c.detail[0].result === "failed") {
+      parts.push(el("span", { class: "result-note", text: c.last_error }));
     }
-    if (notes.length) parts.push(el("span", { class: "result-note", text: notes.join(lang === "zh" ? "；" : "; ") }));
     return parts;
+  }
+
+  function roundResult(r) {
+    var text = r.result === "saved" && r.saved !== undefined && r.saved !== null
+      ? translate("result_saved_amount", fmtMoney(r.saved))
+      : translate("result_" + r.result);
+    var parts = [badge(RESULT_KIND[r.result] || "muted", text)];
+    if (r.return) parts.push(el("span", { class: "result-note", text: translate("round_back", fmtClockSpan(r.idle || 0)) }));
+    return parts;
+  }
+
+  // The rounds of one conversation, newest first.
+  function roundsTable(c) {
+    var priced = pricesReady();
+    var body = el("tbody");
+    (c.detail || []).forEach(function (r) {
+      var start = parseTime(r.start), last = parseTime(r.last);
+      var time = start ? fmtTime(start) : "—";
+      if (start && last && last.getTime() !== start.getTime()) time += " – " + pad(last.getHours()) + ":" + pad(last.getMinutes()) + ":" + pad(last.getSeconds());
+      body.appendChild(el("tr", null, [
+        el("td", { class: "mono", text: time }),
+        r.context ? el("td", { class: "num", text: fmtNum(r.context) }) : el("td", { class: "num muted", text: "—" }),
+        el("td", { class: "num", text: String(r.pings) }),
+        el("td", { class: "num", text: fmtNum(r.cache_read_tokens) }),
+        el("td", { class: "num", text: priced && r.cost !== undefined && r.cost !== null ? fmtMoney(r.cost) : "—" }),
+        el("td", { class: "result" }, roundResult(r))
+      ]));
+    });
+    return el("table", { class: "rounds" }, [
+      el("thead", null, [el("tr", null, [
+        el("th", { text: translate("col_round_time") }),
+        el("th", { class: "num", text: translate("col_context") }),
+        el("th", { class: "num", text: translate("col_round_pings") }),
+        el("th", { class: "num", text: translate("col_read") }),
+        el("th", { class: "num", text: translate("col_cost") }),
+        el("th", { text: translate("col_result") })
+      ])]),
+      body
+    ]);
+  }
+
+  function renderTotals(data) {
+    var t = data.totals || {};
+    var results = t.results || {};
+    var retention = status && status.config ? status.config.history_retention_days : "";
+    var range = translate("range_label_" + data.range, retention);
+    var pings = count(t.pings || 0, "n_ping", "n_pings");
+    var rounds = count(t.rounds || 0, "n_round", "n_rounds");
+    var saved = count(results.saved || 0, "n_round", "n_rounds");
+    $("totals").textContent = pricesReady()
+      ? translate("totals_priced", range, pings, rounds, fmtMoney(t.cost || 0), saved, fmtMoney(t.saved || 0),
+        translate((t.net || 0) >= 0 ? "net_saved" : "net_cost", fmtMoney(t.net || 0)))
+      : translate("totals_plain", range, pings, rounds, saved);
+    var notes = [];
+    if (t.failed) notes.push(translate("totals_failed", count(t.failed, "n_ping", "n_pings")));
+    if (results.pending && pricesReady()) notes.push(translate("totals_pending", count(results.pending, "n_round", "n_rounds")));
+    if (results.unknown) notes.push(translate("totals_unknown", count(results.unknown, "n_round", "n_rounds")));
+    if (t.unpriced && pricesReady()) notes.push(translate("totals_unpriced", count(t.unpriced, "n_round", "n_rounds")));
+    $("totals-notes").textContent = notes.join(lang === "zh" ? "" : " ");
+  }
+
+  function renderPriceHint(data) {
+    var p = data.prices || {};
+    var fetched = parseTime(p.fetched);
+    var text = fetched ? translate("price_hint", fmtTime(fetched)) : translate("price_none");
+    if (p.error) text += (lang === "zh" ? "" : " ") + translate(fetched ? "price_stale" : "price_error", p.error) + (lang === "zh" ? "。" : ".");
+    $("price-hint").textContent = text;
   }
 
   function renderEvents() {
     var data = historyData;
     if (!data) return;
-    var retention = status && status.config ? status.config.history_retention_days : "";
-    var totals = data.totals || {};
-    $("totals").textContent = translate("totals_" + data.range, fmtNum(totals.pings), fmtNum(totals.failed), fmtNum(totals.cache_read_tokens), fmtNum(totals.cache_creation_tokens), retention);
+    var priced = pricesReady();
+    renderTotals(data);
+    renderPriceHint(data);
     var convs = data.conversations || [];
-    var lit = {};
-    ((status && status.conversations) || []).forEach(function (c) { lit[c.key] = true; });
     var body = $("events");
+    // Rows are rebuilt on every refresh; the focused one keeps the focus.
+    var active = document.activeElement;
+    var focused = active && body.contains(active) && active.getAttribute("data-id");
     clear(body);
     $("events-empty").hidden = convs.length > 0;
     body.parentNode.hidden = convs.length === 0;
     convs.forEach(function (c) {
+      var id = historyId(c);
+      var open = !!expanded[id];
       var last = parseTime(c.last), first = parseTime(c.first);
-      body.appendChild(el("tr", null, [
-        el("td", { class: "mono", title: first ? translate("first_ping_hint", fmtTime(first)) : null, text: last ? fmtTime(last) : "—" }),
+      var detail = open ? el("tr", { class: "detail-row" }, [el("td", { colspan: "8" }, [roundsTable(c)])]) : null;
+      function toggle() {
+        if (expanded[id]) delete expanded[id]; else expanded[id] = true;
+        renderEvents();
+      }
+      // A click that ends a text selection does not toggle the row.
+      function click() {
+        if (window.getSelection && String(window.getSelection())) return;
+        toggle();
+      }
+      var hasAmounts = priced && pricedRounds(c) > 0;
+      body.appendChild(el("tr", {
+        class: "conv-row", tabindex: "0", "data-id": id, "aria-expanded": open ? "true" : "false", title: translate("expand_hint"),
+        onclick: click,
+        onkeydown: function (e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+        }
+      }, [
+        el("td", { class: "mono", title: first ? translate("first_ping_hint", fmtTime(first)) : null }, [
+          el("span", { class: "chevron", "aria-hidden": "true", text: "›" }),
+          last ? fmtTime(last) : "—"
+        ]),
         conversationCell(c),
         el("td", { text: c.model }),
-        el("td", { class: "num", text: String(c.pings) }),
+        el("td", { class: "num words", text: translate("rounds_pings", count(c.rounds || 0, "n_round", "n_rounds"), count(c.pings, "n_ping", "n_pings")) }),
         c.context
           ? el("td", { class: "num", title: translate("context_hint"), text: fmtNum(c.context) })
           : el("td", { class: "num muted", text: "—" }),
-        el("td", { class: "num", text: fmtNum(c.cache_read_tokens) }),
-        el("td", { class: "num", text: fmtNum(c.cache_creation_tokens) }),
-        el("td", { class: "result" }, historyResult(c, c.key && lit[c.key]))
+        el("td", { class: "num", text: hasAmounts ? fmtMoney(c.cost || 0) : "—" }),
+        el("td", { class: "num", text: hasAmounts && c.saved > 0 ? fmtMoney(c.saved) : "—" }),
+        el("td", { class: "result" }, historyResult(c))
       ]));
+      if (detail) body.appendChild(detail);
     });
+    if (focused) {
+      Array.prototype.forEach.call(body.querySelectorAll(".conv-row"), function (row) {
+        if (row.getAttribute("data-id") === focused) row.focus({ preventScroll: true });
+      });
+    }
     var rest = (data.count || 0) - convs.length;
     var more = $("events-more");
     more.hidden = rest <= 0 || convs.length >= HISTORY_MAX;
     more.textContent = translate("events_more", Math.min(HISTORY_STEP, rest));
+    renderHistoryHint();
+    schedulePendingReload(convs);
+  }
+
+  function renderHistoryHint() {
+    var retention = status && status.config ? status.config.history_retention_days : "";
     $("history-hint").textContent = status && status.data_dir ? translate("history_hint", status.data_dir, retention) : "";
   }
 
+  // A pending round gets its result on the server 300 seconds after its
+  // last ping, with no new event, so the history is reloaded then.
+  function schedulePendingReload(convs) {
+    clearTimeout(pendingTimer);
+    var next = Infinity;
+    convs.forEach(function (c) {
+      (c.detail || []).forEach(function (r) {
+        var last = r.result === "pending" ? parseTime(r.last) : null;
+        if (last) next = Math.min(next, last.getTime() + CACHE_TTL * 1000);
+      });
+    });
+    if (next === Infinity) return;
+    pendingTimer = setTimeout(function () {
+      if (key) loadHistory().catch(function () {});
+    }, Math.max(1000, next - now() + 2000));
+  }
+
+  // The history table is rebuilt only when the history is loaded, so that
+  // the status refresh every few seconds keeps its focus, selection and
+  // scroll position.
   function renderStatus() {
     renderHeader();
     renderNotices();
     renderConversations();
-    renderEvents();
+    renderHistoryHint();
   }
 
   function showStatus(data) {
@@ -645,9 +815,9 @@
     clockOffset = server ? server.getTime() - Date.now() : 0;
     renderStatus();
     renderDurationHint();
-    // The history changes only with a new ping.
-    if (status.last_ping !== lastPingSeen) {
-      lastPingSeen = status.last_ping;
+    // The history changes only with a new ping or return.
+    if (status.last_event !== lastEventSeen) {
+      lastEventSeen = status.last_event;
       loadHistory().catch(function () {});
     }
   }
@@ -676,11 +846,62 @@
   function selectRange(value) {
     historyRange = value;
     historyLimit = EVENTS_SHOWN;
-    Array.prototype.forEach.call($("range-buttons").querySelectorAll("button"), function (b) {
-      b.setAttribute("aria-pressed", b.getAttribute("data-value") === value ? "true" : "false");
-    });
+    press($("range-buttons"), value, true);
     loadHistory().catch(function () {});
   }
+
+  // ---- Segmented buttons ----
+
+  // Presses the button of box with value and moves the thumb under it.
+  function press(box, value, bounce) {
+    Array.prototype.forEach.call(box.querySelectorAll(".seg"), function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-value") === value ? "true" : "false");
+    });
+    placeThumb(box, bounce);
+  }
+
+  // Places the thumb of box under its pressed button, measured because the
+  // buttons differ in width and may wrap. With bounce it slides there and
+  // squashes on arrival, for a click; otherwise it moves at once, for the
+  // first layout, a language switch or a resize. A placement that changes
+  // nothing is skipped, so that it cannot cut a slide short.
+  function placeThumb(box, bounce) {
+    var thumb = box.querySelector(".seg-thumb");
+    if (!thumb) return;
+    var b = box.querySelector('.seg[aria-pressed="true"]');
+    var spot = b ? [b.offsetLeft, b.offsetTop, b.offsetWidth, b.offsetHeight] : [0, 0, 0, 0];
+    var key = spot.join(",");
+    if (!bounce && box.getAttribute("data-thumb") === key) return;
+    box.setAttribute("data-thumb", key);
+    if (!bounce) box.classList.add("placing");
+    box.style.setProperty("--thumb-x", spot[0] + "px");
+    box.style.setProperty("--thumb-y", spot[1] + "px");
+    box.style.setProperty("--thumb-w", spot[2] + "px");
+    box.style.setProperty("--thumb-h", spot[3] + "px");
+    void thumb.offsetWidth; // apply the position before the transition returns
+    if (!bounce) {
+      box.classList.remove("placing");
+      return;
+    }
+    thumb.classList.remove("bounce");
+    void thumb.offsetWidth; // restart the animation
+    thumb.classList.add("bounce");
+  }
+
+  // The size of a segmented control or its buttons changes when the page
+  // is first shown, the language changes or the window is resized.
+  var thumbObserver = window.ResizeObserver ? new ResizeObserver(function (entries) {
+    entries.forEach(function (entry) {
+      var box = entry.target.closest(".segmented");
+      if (box) placeThumb(box, false);
+    });
+  }) : null;
+  Array.prototype.forEach.call(document.querySelectorAll(".segmented"), function (box) {
+    box.insertBefore(el("span", { class: "seg-thumb", "aria-hidden": "true" }), box.firstChild);
+    if (!thumbObserver) return;
+    thumbObserver.observe(box);
+    Array.prototype.forEach.call(box.querySelectorAll(".seg"), function (b) { thumbObserver.observe(b); });
+  });
 
   function stopConversation(button, convKey) {
     button.disabled = true;
@@ -717,10 +938,8 @@
     return api("GET", CONFIG_API).then(function (data) { rawConfig = data || {}; });
   }
 
-  function pressDuration(d, value) {
-    Array.prototype.forEach.call($(d.buttons).querySelectorAll("button"), function (b) {
-      b.setAttribute("aria-pressed", b.getAttribute("data-value") === value ? "true" : "false");
-    });
+  function pressDuration(d, value, bounce) {
+    press($(d.buttons), value, bounce);
     $(d.custom).hidden = value !== "custom";
   }
 
@@ -736,7 +955,7 @@
     // was entered under Custom.
     DURATIONS.forEach(function (d) {
       var pings = String(configValue(d.field));
-      pressDuration(d, PRESETS.indexOf(pings) < 0 ? "custom" : pings);
+      pressDuration(d, PRESETS.indexOf(pings) < 0 ? "custom" : pings, false);
     });
     renderDurationHint();
   }
@@ -849,7 +1068,7 @@
     Array.prototype.forEach.call($(d.buttons).querySelectorAll("button"), function (button) {
       button.addEventListener("click", function () {
         var value = button.getAttribute("data-value");
-        pressDuration(d, value);
+        pressDuration(d, value, true);
         if (value === "custom") {
           $("settings").elements[d.field].focus();
           return;

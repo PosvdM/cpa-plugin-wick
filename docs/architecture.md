@@ -11,7 +11,8 @@
 | `main.go` | cgo 入口，导出 `cliproxy_plugin_init`，在 C 边界和 `plugin.Handle` 之间转发调用 |
 | `internal/plugin` | RPC 方法分发：注册、拦截、请求结束、管理接口；把数据目录交给下面两个存储 |
 | `internal/keepalive` | 请求筛选、对话识别和描述、挑灯调度、SSE 用量解析，以及正在挑灯的对话的保存和恢复 |
-| `internal/history` | 挑灯记录：按日写入 JSON Lines 文件、按范围查询、按对话汇总、清理过期文件 |
+| `internal/history` | 挑灯记录：按日写入 JSON Lines 文件、按范围查询、按对话和轮次汇总、计算花费和省下的金额、清理过期文件 |
+| `internal/pricing` | 获取并解析 Anthropic 官方定价页，保存最近一次成功获取的价格，按模型名查价格 |
 | `internal/host` | 宿主回调的封装：流式模型执行、读取、关闭和日志 |
 | `internal/config` | 解析 `plugins.configs.wick`，读取 CPA 配置中的启用状态和插件目录 |
 | `internal/web` | 管理页面。HTML、CSS、JavaScript 和图标分文件编辑，嵌入插件后合成一个文档返回 |
@@ -32,7 +33,7 @@
 注意事项：
 
 - `RequestInterceptRequest` 和 `RequestCompletion` 没有 JSON 标签，宿主发送的字段名是 Go 字段名（如 `Body`、`Metadata`），`Body` 为 base64。解码必须使用 `pluginapi` 中的类型。
-- `request.intercept_after` 在请求的 goroutine 中同步调用，没有超时，CPA 每次换账号重试时会再调用一次。处理时只做筛选、计算对话键和描述、复制请求体；写盘由后台 goroutine 完成。
+- `request.intercept_after` 在请求的 goroutine 中同步调用，没有超时，CPA 每次换账号重试时会再调用一次。处理时只做筛选、计算对话键和描述、复制请求体，保存对话由后台 goroutine 完成。请求结束了一轮挑灯时，释放锁之后向挑灯记录追加一行；出现新的对话键、且同一会话和 agent 下已有其他对话时，还要逐条比对消息（见[对话识别和描述](#对话识别和描述)）。
 - 插件自己通过 `host.model.execute_stream` 发出的请求不会再经过本插件的拦截器，其他插件（如用量统计）照常能看到它们。
 - 调用 `execute_stream` 时不传 `host_callback_id`，否则回调作用域结束时 CPA 会关闭这个流。`execute_stream` 会阻塞到第一个数据块到达，期间无法取消。
 - `stream_read` 没有超时。每次挑灯启动一个 60 秒的看门狗，到时关闭流，阻塞中的读取随之返回。
@@ -48,8 +49,8 @@
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /v0/management/wick/status` | 返回 `Manager.Status()`（配置、正在挑灯的对话、最近一次挑灯的时间 `last_ping`），外加插件版本 `version`、CPA 配置中的启用开关 `enabled`、配置错误 `config_error`、数据目录 `data_dir` 和插件时钟 `now`。对话中的 `session` 是完整的会话 ID，`key` 是对话键的前 8 位，`pings` 是本轮（上一个请求之后）的挑灯次数，`max_pings` 是这个对话每轮的上限，`total_pings` 是挑灯记录中这个对话键在保留期内的挑灯次数，由 `plugin.status` 从记录统计（`Store.CountByKey`，不排序）；进行中的挑灯尚未写入记录，因此累计次数不小于本轮次数 |
-| `GET /v0/management/wick/history` | 参数 `range` 为 `24h`（默认）、`7d` 或 `all`（保留期内全部），`limit` 为返回的对话数（默认 20，最多 5000）。返回所选范围内的累计数据 `totals`、对话数 `count`，以及最后挑灯时间最新的 `limit` 个对话 `conversations`，新的在前。每个对话是 `history.Conversation`：首次和最后一次挑灯的时间、次数、命中 / 未命中 / 失败的次数、读取和写入的缓存合计、最后一次挑灯的上下文大小 `context`、最后一次的错误和熄灭原因，描述取自最后一次挑灯 |
+| `GET /v0/management/wick/status` | 返回 `Manager.Status()`（配置、正在挑灯的对话、最近一次写入记录（挑灯或回来）的时间 `last_event`），外加插件版本 `version`、CPA 配置中的启用开关 `enabled`、配置错误 `config_error`、数据目录 `data_dir` 和插件时钟 `now`。对话中的 `session` 是完整的会话 ID，`key` 是对话键的前 8 位，`pings` 是本轮（上一个请求之后）的挑灯次数，`max_pings` 是这个对话每轮的上限，`total_pings` 是挑灯记录中这个对话键在保留期内的挑灯次数，由 `plugin.status` 从记录统计（`Store.CountByKey`，不排序）；进行中的挑灯尚未写入记录，因此累计次数不小于本轮次数 |
+| `GET /v0/management/wick/history` | 参数 `range` 为 `24h`（默认）、`7d` 或 `all`（保留期内全部），`limit` 为返回的对话数（默认 20，最多 5000）。返回所选范围内的汇总 `totals`、价格状态 `prices`、对话数 `count`，以及最后挑灯时间最新的 `limit` 个对话 `conversations`，新的在前。`totals` 和每个对话都包含 `history.Totals`：挑灯次数、失败次数、读取和写入的缓存合计、轮数 `rounds`、按结论统计的轮数 `results`、花费 `cost`、省下的金额 `saved`、净值 `net` 和没有价格的轮数 `unpriced`，算法见[轮次和省耗](#轮次和省耗)。每个对话是 `history.Conversation`，另有首次和最后一次挑灯的时间、最后一次挑灯的上下文大小 `context`、最后一次的错误和熄灭原因、取自最后一次挑灯的描述，以及逐轮明细 `detail`（新的在前：起止时间、模型、次数、上下文、缓存读取、结论、回来的时间和空闲秒数、花费和省下的金额）。`prices` 是 `pricing.State`：所用价格的获取时间 `fetched`、来源、模型数和最近一次失败的错误 `error` |
 | `POST /v0/management/wick/duration` | 请求体为 `{"key": "<对话键前 8 位>", "hours": <小时数>}`，`hours` 为 0 到 24，0 表示恢复默认时长。返回新的状态；找不到对话时返回 404 |
 | `POST /v0/management/wick/stop` | 请求体为 `{"key": "<对话键前 8 位>"}`，熄灭该对话并返回新的状态；找不到对话时返回 404 |
 | `GET /v0/resource/plugins/wick/page` | 管理页面，在管理中心菜单中显示为 Wick |
@@ -59,12 +60,13 @@
 - 页面运行在管理中心的同源 iframe 中。管理密钥取自管理中心的 `localStorage`（`cli-proxy-auth`，用主机和 User-Agent 派生的密钥做异或混淆）；取不到时让用户输入，只存在 `sessionStorage`。主题和语言读取父页面根元素的 `data-theme` 和 `lang`，单独打开时读取管理中心存在 `localStorage` 中的设置。这部分与 Lamplighter 的管理页面相同。
 - 设置通过 CPA 的 `GET` / `PATCH /v0/management/plugins/wick/config` 读写。CPA 对顶层键做浅合并后写入 `config.yaml`，再热加载并调用 `plugin.reconfigure`。CPA 不校验插件配置，因此页面在保存前检查间隔范围、保留天数和整数；插件收到无效配置时使用默认值，并在状态中返回 `config_error`。
 - 默认挑灯时长和子代理挑灯时长共用 `page.js` 中的预设 `PRESETS`，分别对应 `max_pings` 和 `subagent_max_pings`，两行的元素在 `DURATIONS` 中；单个对话的时长预设在 `DURATION_PRESETS` 中。估算的缓存保持时间为 `次数 × (interval_min + interval_max) / 2 + 300` 秒，页面按分钟向下取整显示。
-- 页面每 5 秒刷新一次状态，标签页不可见时暂停。空闲时长和倒计时每秒在本地更新，按状态中的 `now` 校正与插件时钟的偏差。状态中的 `last_ping` 变化时才重新读取挑灯记录。
+- 页面每 5 秒刷新一次状态，标签页不可见时暂停。空闲时长和倒计时每秒在本地更新，按状态中的 `now` 校正与插件时钟的偏差。状态中的 `last_event` 变化时，或最早一个挑灯中的轮次到期（最后一次挑灯后 300 秒，结论在服务端按时间确定，不产生新事件）时，才重新读取挑灯记录。状态刷新不重建挑灯记录的表格，保留其中的焦点、选中的文字和滚动位置。
 - 用户正在使用自定义时长的输入框，或 15 秒内操作过某个对话的时长菜单时，刷新不重建对话表格，否则菜单会被关闭。用方向键在收起的菜单上改值时，每一步都会触发 `change`，因此键盘修改在按 Enter 或菜单失去焦点时才提交。
 - 对话以客户端和第一句话显示，完整的第一句话、项目目录、会话 ID 和对话键放在悬停提示中。入口与客户端名称的对应关系在 `page.js` 的 `CLIENTS` 中，未列出的入口原样显示。
 - 空闲时长和倒计时都显示为 `分:秒`，一小时起为 `时:分:秒`。
 - 上下文大小是一次挑灯的全部输入：`cache_read_input_tokens`、`cache_creation_input_tokens` 和 `input_tokens` 之和。正在挑灯的对话用状态中的 `last_usage` 计算，挑灯记录用 `context`。
-- 挑灯记录中，对话键出现在状态的正在挑灯的对话中时，结果显示“挑灯中”，不显示最后一次的熄灭原因。
+- 挑灯记录的对话行可以点击，或用 Enter、空格键展开逐轮明细。展开状态按对话键保存在页面中，刷新后保留。页面只渲染接口返回的轮次和金额，不自己计算；价格未取得（`prices.fetched` 为空）时不显示金额，对话中有结论、有价格的轮次时才显示花费。
+- 分段按钮（默认挑灯时长、子代理挑灯时长、记录范围）的滑块由 `placeThumb` 定位：测量选中按钮的 `offsetLeft`、`offsetTop`、宽和高，写入 CSS 变量。按钮宽度不同，还可能换行，所以不按序号计算位置。点击时滑块带回弹过渡滑过去，并播放挤压动画 `seg-squash`；首次显示、切换语言、窗口尺寸变化、从隐藏变为可见时由 ResizeObserver 触发，直接定位，不播动画。位置没有变化时跳过，避免打断正在进行的滑动。`prefers-reduced-motion` 时关闭过渡和动画。外观和动画曲线与 Lamplighter 的模式开关相同，两个项目各有一份实现。
 - 标题旁的图标是 `internal/web/logo.png`（64 px），以 data URI 内嵌在页面中。仓库是私有的，页面无法从 GitHub 加载仓库中的文件。
 
 ## 挑灯请求
@@ -95,6 +97,8 @@
 
 每个对话只保存最后一个请求。主对话（没有 agent ID 的请求）收到新请求时，同一会话中首次出现时间晚于主对话上一个请求的其他对话被删除：它们是主对话等待期间启动的 subagent，主对话继续说明它们已经返回。subagent 的请求不触发删除。如果 Claude Code 不发送 agent ID，所有请求都按主对话处理。
 
+对话键包含工具、系统提示和模型。对话中途加载 MCP 服务器或延迟加载的工具（如通过 ToolSearch 加载 WebFetch）、换了系统提示或用 `/model` 换了模型时，后续请求得到新的键。缓存按 tools → system → messages 的顺序匹配前缀，旧键的缓存再也读不到，继续挑灯只会白花钱。因此出现新键时，`replaceLocked` 检查同一会话、同一 agent ID（都为空也算相同）下的其他对话：旧请求的消息除最后一条外，与新请求开头的消息逐条原样相同（比较原始 JSON），就判定为同一对话的延续，删除旧对话，日志中的熄灭原因为 `replaced`。最后一条不比较，因为 Claude Code 会把缓存标记移到新的最后一条消息上。只有一条消息的旧对话无从比较，不删除。只看会话 ID 不够：Claude Code 的后台辅助请求也带同一个会话 ID，但不是在原对话后面续写的。只有同一会话和 agent 下已有其他对话时才解析消息，普通请求不受影响。
+
 内存中最多保存 32 个对话，超出时删除最后请求最早的一个；单独设了时长的对话最后删除。
 
 页面上的描述在记录请求时取出（`describe.go`）：
@@ -116,7 +120,47 @@
 - 每次挑灯前读取 CPA 配置文件，插件被关闭时删除对话。CPA v8.0.39 在插件被关闭时卸载实例（与 `plugin.shutdown` 相同，见下文），这项检查用于卸载前的间隙和不卸载实例的 CPA 版本。
 - `plugin.quiesce` 和 `plugin.shutdown` 先保存对话，再停止所有计时器、清空内存中的对话，并关闭进行中的挑灯流；磁盘上保存的对话供下一个实例恢复。之后的 `plugin.reconfigure` 恢复运行，并重新从磁盘恢复对话。插件被关闭后在缓存过期前重新启用，保存的对话也会恢复。
 - 从管理页面熄灭对话时，删除该对话。进行中的挑灯照常完成，返回时因找不到对话而不再安排下一次。
+- 因达到上限、到达单独设置的时长、修改配置、恢复默认时长、手动熄灭或淘汰而删除的对话，如果本轮挑过灯，`retireLocked` 把这一轮另存在 `ended` 中，保留到最后一次读取缓存后 300 秒，用来判断这段时间内的回来。挑灯未命中或失败、插件关闭、子代理结束和换键删除的对话不保留。`ended` 不保存到磁盘，重启或热更新时丢失，这期间的回来不会被记录。
 - 计时器回调运行在独立的 goroutine 中，未恢复的 panic 会使 CPA 进程退出，因此回调带 `recover`。
+
+## 轮次和省耗
+
+### 回来
+
+对话收到请求时，如果它本轮挑过灯（正在挑灯，或在 `ended` 中），`Manager.Observe` 往挑灯记录写一条 `kind` 为 `return` 的事件，记下 `saved`、距上一个请求的秒数 `idle`、本轮最后一次成功挑灯的输入 `context` 和本轮次数 `pings`，`ping` 为 0。`saved` 的条件是距最后一次成功读取缓存（`lastRead`）不到 300 秒，并且距上一个请求（`lastRequest`）至少 300 秒：前者说明缓存靠挑灯保持着，后者说明不挑灯缓存已经过期。
+
+### 轮次重建
+
+`history.Group` 从记录重建轮次，轮次本身不写进文件，旧记录也能拆分。同一对话键的事件按时间排序，`ping` 序号不大于上一条，或上一轮已有回来事件时，开始新的一轮；回来事件结束当前一轮。没有对应挑灯的回来事件（如挑灯在所选范围之外）被忽略。
+
+每轮的结论 `Round.Result` 按以下顺序判断：
+
+1. 本轮最后一次挑灯失败或写入了缓存：`failed` 或 `miss`。
+2. 有回来事件：`saved` 为真时为 `saved`，否则为 `wasted`。
+3. 最后一次挑灯没有 `returns` 标记，即由 v0.5.0 之前的版本写入：`unknown`，只显示轮次，不计金额。
+4. 最后一次成功挑灯后不到 300 秒：`pending`。
+5. 其余为 `wasted`：超过 300 秒没有回来，结论已定，不必等待。换键删除的对话不会再有回来事件，按这一条算作 `wasted`。
+
+v0.5.0 起每条事件都带 `returns: true`，用来区分“没有回来”和“当时的版本不记录回来”。
+
+### 金额
+
+金额在查询时按当前价格计算，不写进事件：
+
+- 每次挑灯的花费为 `cache_read × 读取价 + cache_creation × 5 分钟写入价 + input × 输入价`。挑灯在 `message_start` 断开，输出按 0 计。分档价格按这次挑灯的输入总量选档。
+- `saved` 轮省下的金额为回来事件的 `context` × (5 分钟写入价 − 读取价)。
+- 汇总中的 `cost` 和 `saved` 包括 `pending` 轮；`net` 为 `saved` 减去有结论的轮次的花费，不含 `pending` 轮。`unknown` 轮和模型没有价格的轮次不计入这三项，后者计入 `unpriced`。
+
+### API 价格
+
+`internal/pricing` 读取官方定价页的 Markdown 版本 `https://platform.claude.com/docs/en/about-claude/pricing.md`：
+
+- 解析 `## Model pricing` 下的第一张表，按表头找到 Base input、5m cache writes、1h cache writes、Cache hits and refreshes 和 Output 五列，单价格式为 `$x / MTok`。
+- 模型名去掉括注，如 “([limited availability](…))”。“(for prompts up to / over 100,000 tokens)” 这类括注解析为分档价格，按输入总量（读取、写入和未缓存的输入之和）选档。显示名拆成系列和版本号，如 “Claude Opus 5.5” 的系列为 `opus`、版本为 `5.5`，ID 为 `claude-opus-5-5`。
+- 查价格时，CPA 的模型名转为小写，去掉方括号后缀（如 `[1m]`），拆成单词和版本号。版本号取第一段连续的一两位数字，之后的日期和数字（如 Bedrock ID 末尾的 `-v1:0`）不计入；表中和模型名的版本号都去掉末尾的 `.0`，所以 `claude-opus-4-0` 对应 Claude Opus 4。版本号相同、并且包含表中系列的全部单词时匹配，所以 `-thinking` 等后缀和老型号的词序（如 `claude-3-5-haiku`）都能匹配。匹配不到的模型不计金额。
+- 只解析模型价格表。Claude Sonnet 4 和 4.5 的提示超过 200K token 时按长上下文价格计费，这部分加价不计入，金额偏低。
+- 插件加载时获取一次，成功后每 24 小时获取一次，失败后 1 小时重试；使用标准 `net/http`，超时 15 秒。成功后写入数据目录的 `prices.json`（带获取时间），插件加载时先读这个文件。获取或解析失败时沿用当前价格，在日志和页面上提示。解析出的模型少于 5 个时按失败处理，避免定价页改版后覆盖可用的价格。
+- `plugin.quiesce` 和 `plugin.shutdown` 停止获取；之后的 `plugin.reconfigure` 重新开始，并立即获取一次。
 
 ## 数据目录
 
@@ -141,9 +185,13 @@
 
 ### 挑灯记录
 
-`internal/history` 把每次挑灯的 `keepalive.Event` 追加到 `history/<UTC 日期>.jsonl`，每行一个 JSON 对象，每次用一个 `O_APPEND` 写入一整行，热更新时新旧实例短暂并存也不会写坏文件。每天第一次写入时删除早于 `history_retention_days` 天的文件。查询时按日读取文件，按文件大小和修改时间缓存解析结果，文件未变时不重新解析。
+`internal/history` 把每次挑灯和每次回来的 `keepalive.Event` 追加到 `history/<UTC 日期>.jsonl`，每行一个 JSON 对象，每次用一个 `O_APPEND` 写入一整行，热更新时新旧实例短暂并存也不会写坏文件。每天第一次写入时删除早于 `history_retention_days` 天的文件。查询时按日读取文件，按文件大小和修改时间缓存解析结果，文件未变时不重新解析。
 
-记录接口把查询结果交给 `history.Group`，按对话键（前 8 位）汇总，同一个对话在所选范围内只返回一项。文件格式不变，每次挑灯仍是一行；没有对话键的记录按会话 ID 汇总。
+记录接口把查询结果交给 `history.Group`，按对话键（前 8 位）汇总并拆分轮次，同一个对话在所选范围内只返回一项；没有对话键的记录按会话 ID 汇总。状态接口的累计次数（`Store.CountByKey`）和汇总都只计挑灯事件，不计回来事件。
+
+### API 价格
+
+`prices.json` 是最近一次成功获取的价格表（`pricing.Table`）：获取时间、来源和每个模型的名称、ID、系列、版本号和分档价格。
 
 ## 开发
 
@@ -159,7 +207,7 @@ go vet ./internal/...
 go test ./internal/...
 ```
 
-测试使用假的宿主和时钟，不发送真实请求，也不等待真实时间；持久化的测试在临时目录中直接调用写入函数，不等待后台 goroutine。覆盖内容：请求筛选和挑灯请求体（包括去掉客户端凭据）、对话键、项目目录和第一句话的提取、挑灯间隔和次数、子代理的上限（包括单独时长和 `subagent_max_pings: 0`）、从记录统计的累计次数、新请求重新计时、缓存未命中和错误时熄灭、subagent 的删除（包括带 agent ID 的并行 subagent）、失败和中断请求的处理、插件关闭和 `max_pings: 0`、过期的挑灯结果、单独时长的截止和清除、淘汰时保留单独时长的对话、对话的保存和恢复（计划保持、到期补发、晚于截止点时提前、缓存过期不恢复、停止前的最后状态、文件删除）、挑灯记录的写入、查询、按对话汇总和清理、SSE 解析、日志正文、配置校验和数据目录，手动熄灭对话，插件 RPC 的注册和拦截请求解码，以及管理接口和页面。
+测试使用假的宿主和时钟，不发送真实请求，也不等待真实时间；持久化的测试在临时目录中直接调用写入函数，不等待后台 goroutine。覆盖内容：请求筛选和挑灯请求体（包括去掉客户端凭据）、对话键、项目目录和第一句话的提取、挑灯间隔和次数、子代理的上限（包括单独时长和 `subagent_max_pings: 0`）、从记录统计的累计次数、新请求重新计时、缓存未命中和错误时熄灭、subagent 的删除（包括带 agent ID 的并行 subagent）、失败和中断请求的处理、插件关闭和 `max_pings: 0`、过期的挑灯结果、单独时长的截止和清除、淘汰时保留单独时长的对话、对话的保存和恢复（计划保持、到期补发、晚于截止点时提前、缓存过期不恢复、停止前的最后状态、文件删除）、挑灯记录的写入、查询、按对话汇总和清理、SSE 解析、日志正文、配置校验和数据目录，手动熄灭对话，插件 RPC 的注册和拦截请求解码，管理接口和页面，换了工具后熄灭旧对话（辅助请求和其他 agent 不受影响），回来事件的判定（及时回来、过早、过晚、手动熄灭后回来、换键后不记录），轮次重建、结论和金额，以及定价页的解析（以 2026-10-24 的官方页面 `internal/pricing/testdata/pricing.md` 为样例）、模型名匹配和价格缓存。
 
 ### 构建
 
@@ -181,5 +229,6 @@ sh scripts/build.sh 0.1.0
 - 修改挑灯请求的构造时，对照 CPA 的 `internal/runtime/executor/claude_executor*.go`，确认发往上游的内容仍与原请求一致。
 - 修改 `conversation` 或 `request` 的字段时，同步修改 `persist.go` 中保存和恢复的字段。
 - 新增的 goroutine 必须有 `recover`。
+- 定价页的表格结构变化时，用新页面替换 `internal/pricing/testdata/pricing.md`，再修改解析。
 - 更换 `assets/logo.png` 时，同步生成 64 px 的 `internal/web/logo.png`，并发布新版本，页面上的图标才会更新。
 - 用户可见的行为、配置和限制写进 README（中英文同步），实现细节写进本文档（中英文同步）。

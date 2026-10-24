@@ -11,7 +11,8 @@ A ping in this document is one keep-alive request: the last request of a convers
 | `main.go` | cgo entry point; exports `cliproxy_plugin_init` and forwards calls between the C boundary and `plugin.Handle` |
 | `internal/plugin` | RPC dispatch: registration, interception, request completion, management API; hands the data directory to the two stores below |
 | `internal/keepalive` | Request filtering, conversation keys and descriptions, ping scheduling, SSE usage parsing, and saving and restoring the conversations kept lit |
-| `internal/history` | Ping history: daily JSON Lines files, range queries, sums by conversation, deletion of old files |
+| `internal/history` | Ping history: writes daily JSON Lines files, queries ranges, sums by conversation and round, works out cost and savings, and deletes old files |
+| `internal/pricing` | Fetches and parses Anthropic's pricing page, keeps the prices last fetched, and looks up prices by model name |
 | `internal/host` | Host callback wrappers: streaming model execution, read, close and log |
 | `internal/config` | Parses `plugins.configs.wick` and reads the enabled flags and the plugin directory from the CPA config |
 | `internal/web` | The management page. HTML, CSS, JavaScript and the logo are edited as separate files, embedded in the plugin and served as one document |
@@ -32,7 +33,7 @@ The plugin registers three capabilities: `request_interceptor`, `request_lifecyc
 Notes:
 
 - `RequestInterceptRequest` and `RequestCompletion` have no JSON tags, so the host sends Go field names (`Body`, `Metadata` and so on), with `Body` in base64. Decode them with the `pluginapi` types.
-- `request.intercept_after` runs synchronously on the request goroutine with no timeout, and CPA calls it again for every account retry. The handler only filters, computes the conversation key and description, and copies the body; a background goroutine writes the files.
+- `request.intercept_after` runs synchronously on the request goroutine with no timeout, and CPA calls it again for every account retry. The handler only filters, computes the conversation key and description, and copies the body; a background goroutine saves the conversations. When the request ends a round of pings, it appends one line to the history after releasing the lock; when a new conversation key appears and the same session and agent already have another conversation, it also compares their messages one by one (see [Conversation key and description](#conversation-key-and-description)).
 - Requests the plugin sends through `host.model.execute_stream` skip this plugin's own interceptors. Other plugins, such as usage trackers, still see them.
 - `execute_stream` is called without `host_callback_id`; with one, CPA would close the stream when the callback scope ends. `execute_stream` blocks until the first chunk arrives and cannot be cancelled meanwhile.
 - `stream_read` has no timeout. Each ping starts a 60-second watchdog that closes the stream, which makes a blocked read return.
@@ -48,8 +49,8 @@ Notes:
 
 | Route | Use |
 | --- | --- |
-| `GET /v0/management/wick/status` | Returns `Manager.Status()` (the config, the conversations kept lit, and the time of the latest ping, `last_ping`) plus the plugin version `version`, the enabled flag in the CPA config `enabled`, the config error `config_error`, the data directory `data_dir` and the plugin clock `now`. A conversation's `session` is the full session ID, `key` the first 8 characters of the conversation key, `pings` the pings of this round (since the last request), `max_pings` the conversation's limit per round, and `total_pings` the pings of the conversation key in the history within the retention, counted from the history by `plugin.status` (`Store.CountByKey`, without sorting); a ping in flight is not in the history yet, so the total is never below the count of the round |
-| `GET /v0/management/wick/history` | `range` is `24h` (default), `7d` or `all` (everything within the retention), and `limit` is the number of conversations returned (default 20, at most 5000). Returns the totals for the range `totals`, the number of conversations `count`, and the `limit` conversations pinged last, `conversations`, newest first. Each is a `history.Conversation`: the times of the first and last ping, the ping count, the counts of hits, misses and failures, the cache read and written in total, the context size of the last ping `context`, and the error and stop reason of the last ping, with the description taken from the last ping |
+| `GET /v0/management/wick/status` | Returns `Manager.Status()` (the config, the conversations kept lit, and the time of the latest event recorded, a ping or a return, `last_event`) plus the plugin version `version`, the enabled flag in the CPA config `enabled`, the config error `config_error`, the data directory `data_dir` and the plugin clock `now`. A conversation's `session` is the full session ID, `key` the first 8 characters of the conversation key, `pings` the pings of this round (since the last request), `max_pings` the conversation's limit per round, and `total_pings` the pings of the conversation key in the history within the retention, counted from the history by `plugin.status` (`Store.CountByKey`, without sorting); a ping in flight is not in the history yet, so the total is never below the count of the round |
+| `GET /v0/management/wick/history` | `range` is `24h` (default), `7d` or `all` (everything within the retention), and `limit` is the number of conversations returned (default 20, at most 5000). Returns the totals for the range `totals`, the price state `prices`, the number of conversations `count`, and the `limit` conversations pinged last, `conversations`, newest first. `totals` and each conversation hold a `history.Totals`: pings, failures, cache read and written in total, rounds `rounds`, rounds by result `results`, cost `cost`, amount saved `saved`, net `net` and rounds without a price `unpriced`, worked out as described in [Rounds, cost and savings](#rounds-cost-and-savings). Each conversation is a `history.Conversation`, which also has the times of the first and last ping, the context size of the last ping `context`, the error and stop reason of the last ping, the description taken from the last ping, and the rounds `detail`, newest first: start and end, model, pings, context, cache read, result, the time of the return and the idle seconds, cost and amount saved. `prices` is a `pricing.State`: when the prices in use were fetched `fetched`, the source, the number of models, and the error of the last failed fetch `error` |
 | `POST /v0/management/wick/duration` | Takes `{"key": "<first 8 characters of the conversation key>", "hours": <hours>}` with `hours` from 0 to 24, where 0 returns to the default time. Returns the new status; returns 404 when no conversation matches |
 | `POST /v0/management/wick/stop` | Takes `{"key": "<first 8 characters of the conversation key>"}`, snuffs out that conversation and returns the new status; returns 404 when no conversation matches |
 | `GET /v0/resource/plugins/wick/page` | The management page, listed as Wick in the Management Center menu |
@@ -59,12 +60,13 @@ How the page works:
 - The page runs in a same-origin iframe of the Management Center. It takes the management key from the Management Center's `localStorage` (`cli-proxy-auth`, XOR-obfuscated with a key derived from the host and User-Agent); without one it asks the user and keeps the key in `sessionStorage` only. The theme and language come from the `data-theme` and `lang` attributes of the parent page's root element, or from the Management Center settings in `localStorage` when the page is opened on its own. This part matches Lamplighter's management page.
 - Settings are read and written through CPA's `GET` / `PATCH /v0/management/plugins/wick/config`. CPA shallow-merges the top-level keys, writes `config.yaml`, then hot-reloads and calls `plugin.reconfigure`. CPA does not validate plugin config, so the page checks the interval range, the retention and whole numbers before saving; with an invalid config the plugin uses the defaults and reports `config_error` in the status.
 - The default time and the subagent time share the presets `PRESETS` in `page.js`, for `max_pings` and `subagent_max_pings`; the elements of both rows are in `DURATIONS`, and the per-conversation presets in `DURATION_PRESETS`. The estimated cache lifetime is `pings × (interval_min + interval_max) / 2 + 300` seconds, shown in whole minutes rounded down.
-- The page refreshes the status every 5 seconds and pauses while the tab is hidden. Idle times and countdowns update locally every second, corrected for the offset from the plugin clock using `now` in the status. The history is reloaded only when `last_ping` in the status changes.
+- The page refreshes the status every 5 seconds and pauses while the tab is hidden. Idle times and countdowns update locally every second, corrected for the offset from the plugin clock using `now` in the status. The history is reloaded only when `last_event` in the status changes, or when the earliest pending round gets its result (300 seconds after its last ping; the server settles it by time, with no new event). A status refresh does not rebuild the history table, so its focus, text selection and scroll position stay.
 - While the user is typing in the custom duration field, or has touched a conversation's duration menu in the last 15 seconds, a refresh does not rebuild the conversation table, which would close the menu. Arrow keys on a closed menu fire `change` at every step, so a change made with the keyboard is committed on Enter or when the menu loses focus.
 - A conversation is shown by its client and first prompt; the full first prompt, project directory, session ID and conversation key are in the tooltip. The entrypoint-to-client names are in `CLIENTS` in `page.js`; entrypoints not listed are shown as sent.
 - The idle time and the countdown are both shown as `m:ss`, or `h:mm:ss` from an hour on.
 - The context size is the whole input of a ping: the sum of `cache_read_input_tokens`, `cache_creation_input_tokens` and `input_tokens`. The conversations kept lit use `last_usage` from the status, the history uses `context`.
-- In the history, a conversation whose key is among the conversations kept lit in the status shows "Still lit" in place of the stop reason of its last ping.
+- A history row opens its rounds when clicked, or with Enter or Space. The open rows are kept by conversation key in the page and stay open across refreshes. The page only renders the rounds and amounts the route returns and calculates nothing itself; without prices (`prices.fetched` empty) it shows no amounts, and a conversation shows a cost only when it has a round with a result and a price.
+- The thumb of the segmented buttons (default time, subagent time, history range) is placed by `placeThumb`, which measures the pressed button's `offsetLeft`, `offsetTop`, width and height and writes them to CSS variables. The buttons differ in width and may wrap, so the position is not computed from an index. On a click the thumb slides there with an overshooting transition and plays the squash animation `seg-squash`; on the first layout, a language switch, a resize or when the page turns visible, a ResizeObserver places it at once without animation. A placement that changes nothing is skipped, so that it cannot cut a slide short. With `prefers-reduced-motion` the transitions and animation are off. The look and curves match the mode switches of Lamplighter; each project has its own copy.
 - The icon next to the title is `internal/web/logo.png` (64 px), inlined in the page as a data URI. The repository is private, so the page cannot load the repository's files from GitHub.
 
 ## Ping request
@@ -95,6 +97,8 @@ The conversation key is the SHA-256 of the session ID, the agent ID, the model, 
 
 Only the last request of each conversation is kept. When the main conversation (a request without an agent ID) receives a new request, other conversations in the same session first seen after the main conversation's previous request are deleted: they are subagents started while the main conversation waited, and the main conversation continuing means they have returned. Subagent requests do not trigger deletion. If Claude Code sends no agent ID, every request is treated as the main conversation.
 
+The key covers the tools, the system prompt and the model. When a conversation loads MCP servers or deferred tools midway (such as WebFetch through ToolSearch), changes its system prompt, or switches model with `/model`, its later requests get a new key. The cache matches prefixes in the order tools → system → messages, so the old key's cache can never be read again and further pings only waste money. When a new key appears, `replaceLocked` therefore checks the other conversations of the same session and agent ID (both empty counts as the same): if the old request's messages, all but the last, open the new request's messages unchanged (compared as raw JSON), the new request continues the old conversation, which is deleted with the stop reason `replaced` in the log. The last message is not compared because Claude Code moves the cache marker to the new last message. An old conversation of one message cannot be compared and is kept. The session ID alone is not enough: Claude Code's background helper requests carry the same session ID but do not continue the conversation. Messages are parsed only when the same session and agent already have another conversation, so ordinary requests are not slowed down.
+
 At most 32 conversations are kept in memory; beyond that, the one with the oldest last request is deleted, with conversations that have a time set deleted last.
 
 The description on the page is taken when the request is recorded (`describe.go`):
@@ -116,7 +120,47 @@ The description on the page is taken when the request is recorded (`describe.go`
 - Before each ping the plugin reads the CPA config file and deletes the conversation if the plugin is disabled. CPA v8.0.39 unloads a disabled plugin (the same as `plugin.shutdown`, below); the check covers the gap before unloading and CPA versions that keep the instance.
 - `plugin.quiesce` and `plugin.shutdown` save the conversations, then stop all timers, clear the conversations in memory and close ping streams in progress; the next instance restores what was saved. A later `plugin.reconfigure` resumes and restores the conversations from disk again. Re-enabling a disabled plugin before the cache expires also restores the saved conversations.
 - Snuffing out a conversation from the management page deletes it. A ping in flight still finishes and, finding no conversation when it returns, schedules nothing.
+- When a conversation with pings in its round is deleted for reaching its limit or the time set for it, a config change, a return to the default time, snuffing out by hand or eviction, `retireLocked` keeps the round in `ended` until 300 seconds after the cache was last read, so that a return in that time is judged. Conversations deleted after a missed or failed ping, a disabled plugin, a finished subagent or a new key are not kept. `ended` is not saved to disk, so a restart or hot update loses it, and returns in that time are not recorded.
 - Timer callbacks run on their own goroutines, where an unrecovered panic would exit the CPA process, so they use `recover`.
+
+## Rounds, cost and savings
+
+### Returns
+
+When a conversation with pings in its round (kept lit or in `ended`) receives a request, `Manager.Observe` writes an event with `kind` `return` to the history, recording `saved`, the seconds since the previous request `idle`, the input of the round's last successful ping `context`, and the pings of the round `pings`, with `ping` 0. `saved` holds when the last successful cache read (`lastRead`) was less than 300 seconds ago and the previous request (`lastRequest`) at least 300 seconds ago: the first means the pings kept the cache alive, the second that without them it would have expired.
+
+### Rebuilding rounds
+
+`history.Group` rebuilds the rounds from the history; rounds are not written to the files, so older history can be split too. The events of one conversation key are ordered by time, and a new round starts with a `ping` number no higher than the previous one, or after a return; a return ends the current round. A return without a ping of its round (for example, with the pings outside the range) is left out.
+
+A round's result, `Round.Result`, is decided in this order:
+
+1. The round's last ping failed or wrote to the cache: `failed` or `miss`.
+2. The round has a return: `saved` if its `saved` is true, otherwise `wasted`.
+3. The last ping has no `returns` flag, so a version before v0.5.0 wrote it: `unknown`, shown without amounts.
+4. The last successful ping was less than 300 seconds ago: `pending`.
+5. Otherwise `wasted`: with no return within 300 seconds the result is settled without waiting. A conversation deleted for a new key never gets a return, so it counts as `wasted` here.
+
+From v0.5.0 every event carries `returns: true`, which tells "did not come back" apart from "the version did not record returns".
+
+### Amounts
+
+Amounts are calculated at the current prices when the history is queried and are not written to the events:
+
+- A ping costs `cache_read × read price + cache_creation × 5-minute write price + input × input price`. The ping disconnects at `message_start`, so output counts as 0. Prices with tiers use the tier of the ping's total input.
+- A `saved` round saves the return's `context` × (5-minute write price − read price).
+- `cost` and `saved` in the totals include `pending` rounds; `net` is `saved` less the cost of rounds with a result, leaving out `pending` rounds. `unknown` rounds and rounds whose model has no price are left out of all three, and the latter are counted in `unpriced`.
+
+### API prices
+
+`internal/pricing` reads the Markdown version of the official pricing page, `https://platform.claude.com/docs/en/about-claude/pricing.md`:
+
+- It parses the first table under `## Model pricing`, finding the Base input, 5m cache writes, 1h cache writes, Cache hits and refreshes, and Output columns by their headers; prices are written as `$x / MTok`.
+- Notes in parentheses after a model name, such as "([limited availability](…))", are removed. A note such as "(for prompts up to / over 100,000 tokens)" makes a price tier, chosen by the total input (cache reads, cache writes and uncached input). The display name is split into a family and version: "Claude Opus 5.5" has family `opus`, version `5.5` and ID `claude-opus-5-5`.
+- To look up a price, CPA's model name is lowercased, stripped of a bracketed suffix (such as `[1m]`), and split into words and a version. The version is the first run of one- or two-digit numbers; dates and numbers after it (such as `-v1:0` at the end of a Bedrock ID) are not part of it. Trailing `.0` parts are dropped from versions in the table and in model names, so `claude-opus-4-0` is Claude Opus 4. A model matches when the version is the same and the words include every word of the family, so suffixes such as `-thinking` and the old word order (such as `claude-3-5-haiku`) match. Models that match nothing get no amounts.
+- Only the model pricing table is parsed. Claude Sonnet 4 and 4.5 prompts over 200K tokens are billed at long context prices; that premium is not counted, so their amounts come out low.
+- The prices are fetched when the plugin loads, every 24 hours after a success, and an hour after a failure, with standard `net/http` and a 15-second timeout. A good fetch is written to `prices.json` in the data directory with its time, and the plugin reads that file when it loads. A failed fetch or parse keeps the prices in use and is reported in the log and on the page. A parse that finds fewer than 5 models counts as a failure, so that a redesigned page cannot replace good prices.
+- `plugin.quiesce` and `plugin.shutdown` stop the fetching; a later `plugin.reconfigure` starts it again with an immediate fetch.
 
 ## Data directory
 
@@ -141,9 +185,13 @@ After `plugin.register` or `plugin.reconfigure` sets the directory, the manager 
 
 ### Ping history
 
-`internal/history` appends the `keepalive.Event` of every ping to `history/<UTC date>.jsonl`, one JSON object per line, each written whole with one `O_APPEND` write, so two instances overlapping briefly during a hot update cannot corrupt a file. The first write of each day deletes files older than `history_retention_days` days. Queries read the files day by day and cache the parsed result by file size and modification time, so unchanged files are not parsed again.
+`internal/history` appends the `keepalive.Event` of every ping and every return to `history/<UTC date>.jsonl`, one JSON object per line, each written whole with one `O_APPEND` write, so two instances overlapping briefly during a hot update cannot corrupt a file. The first write of each day deletes files older than `history_retention_days` days. Queries read the files day by day and cache the parsed result by file size and modification time, so unchanged files are not parsed again.
 
-The history route passes the query result to `history.Group`, which sums it by conversation key (the first 8 characters), so a conversation appears once per range. The file format is unchanged, one line per ping; entries without a conversation key are summed by session ID.
+The history route passes the query result to `history.Group`, which sums it by conversation key (the first 8 characters) and splits it into rounds, so a conversation appears once per range; entries without a conversation key are summed by session ID. The total in the status (`Store.CountByKey`) and the sums count pings only, not returns.
+
+### API prices
+
+`prices.json` is the price table last fetched (`pricing.Table`): the time of the fetch, the source, and the name, ID, family, version and price tiers of each model.
 
 ## Development
 
@@ -159,7 +207,7 @@ go vet ./internal/...
 go test ./internal/...
 ```
 
-The tests use a fake host and clock; they send no real requests and do not wait in real time. The persistence tests call the write function directly in a temp directory instead of waiting for the background goroutine. They cover the request filter and ping body (including removal of the client credentials), conversation keys, extraction of the project directory and first prompt, ping intervals and counts, the subagent limit (including a time set and `subagent_max_pings: 0`), the total counted from the history, rescheduling on a new request, snuffing out on a cache miss or error, removal of subagents (including parallel subagents with agent IDs), failed and interrupted requests, disabling the plugin and `max_pings: 0`, stale ping results, the deadline and clearing of a time set for a conversation, sparing such conversations on eviction, saving and restoring conversations (schedule kept, overdue ping sent soon, late ping brought forward, expired cache not restored, the last state before stopping, files deleted), writing, querying, summing by conversation and pruning the ping history, SSE parsing, log messages, config validation and the data directory, snuffing out a conversation by hand, plugin RPC registration and decoding of intercepted requests, and the management API and page.
+The tests use a fake host and clock; they send no real requests and do not wait in real time. The persistence tests call the write function directly in a temp directory instead of waiting for the background goroutine. They cover the request filter and ping body (including removal of the client credentials), conversation keys, extraction of the project directory and first prompt, ping intervals and counts, the subagent limit (including a time set and `subagent_max_pings: 0`), the total counted from the history, rescheduling on a new request, snuffing out on a cache miss or error, removal of subagents (including parallel subagents with agent IDs), failed and interrupted requests, disabling the plugin and `max_pings: 0`, stale ping results, the deadline and clearing of a time set for a conversation, sparing such conversations on eviction, saving and restoring conversations (schedule kept, overdue ping sent soon, late ping brought forward, expired cache not restored, the last state before stopping, files deleted), writing, querying, summing by conversation and pruning the ping history, SSE parsing, log messages, config validation and the data directory, snuffing out a conversation by hand, plugin RPC registration and decoding of intercepted requests, the management API and page, snuffing out the old conversation after a tool change (with helper requests and other agents left alone), judging returns (in time, too early, too late, after snuffing out by hand, none after a new key), rebuilding rounds with their results and amounts, and parsing the pricing page (with the official page of 2026-10-24 in `internal/pricing/testdata/pricing.md`), matching model names and caching prices.
 
 ### Build
 
@@ -181,5 +229,6 @@ Pushing a `v*` tag makes GitHub Actions (`.github/workflows/build.yml`) run the 
 - When changing how the ping request is built, check CPA's `internal/runtime/executor/claude_executor*.go` to confirm that what goes upstream still matches the original request.
 - When changing the fields of `conversation` or `request`, update the fields saved and restored in `persist.go`.
 - New goroutines must use `recover`.
+- When the pricing page changes its table layout, replace `internal/pricing/testdata/pricing.md` with the new page before changing the parser.
 - When replacing `assets/logo.png`, also generate the 64 px `internal/web/logo.png`; the page shows the new icon only after a release.
 - User-visible behavior, configuration and limits go in the README (Chinese and English); implementation details go in this document (Chinese and English).

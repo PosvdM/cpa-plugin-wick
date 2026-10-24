@@ -18,6 +18,7 @@ import (
 	"github.com/PosvdM/cpa-plugin-wick/internal/history"
 	"github.com/PosvdM/cpa-plugin-wick/internal/host"
 	"github.com/PosvdM/cpa-plugin-wick/internal/keepalive"
+	"github.com/PosvdM/cpa-plugin-wick/internal/pricing"
 	"github.com/PosvdM/cpa-plugin-wick/internal/web"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -31,12 +32,16 @@ const (
 	pagePath = "/page"
 )
 
+// priceSource is the pricing page; tests point it elsewhere.
+var priceSource = pricing.Source
+
 // Plugin handles the RPC methods of one loaded plugin instance.
 type Plugin struct {
 	version        string
 	host           host.Host
 	manager        *keepalive.Manager
 	history        *history.Store
+	prices         *pricing.Store
 	hostConfigPath string
 	workDir        string
 
@@ -48,12 +53,15 @@ type Plugin struct {
 // workDir the CPA working directory, against which relative paths resolve.
 func New(h host.Host, version, hostConfigPath, workDir string) *Plugin {
 	store := history.New()
+	prices := pricing.NewStore(func(level, message string) { h.Log(level, message, nil) })
+	prices.URL = priceSource
 	return &Plugin{
 		version:        version,
 		host:           h,
 		hostConfigPath: hostConfigPath,
 		workDir:        workDir,
 		history:        store,
+		prices:         prices,
 		manager: keepalive.New(keepalive.Options{
 			Host:     h,
 			Enabled:  func() bool { return enabledInHostConfig(hostConfigPath) },
@@ -114,9 +122,10 @@ func (p *Plugin) Handle(method string, request []byte) (out []byte) {
 	return result
 }
 
-// Shutdown stops all keep-alives.
+// Shutdown stops all keep-alives and the price updates.
 func (p *Plugin) Shutdown() {
 	p.manager.Stop()
+	p.prices.Stop()
 }
 
 func (p *Plugin) handle(method string, request []byte) ([]byte, error) {
@@ -143,9 +152,10 @@ func (p *Plugin) handle(method string, request []byte) ([]byte, error) {
 		dir := config.DataDir(cfg.DataDir, p.hostConfigPath, p.workDir)
 		p.history.Configure(filepath.Join(dir, "history"), cfg.HistoryRetentionDays)
 		p.manager.SetStore(filepath.Join(dir, "conversations"))
+		p.prices.Start(dir)
 		return ok(p.registration())
 	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
-		p.manager.Stop()
+		p.Shutdown()
 		return ok(struct{}{})
 	case pluginabi.MethodRequestInterceptAfter:
 		// The struct has no JSON tags, so the host sends Go field names.
@@ -348,6 +358,8 @@ type historyResponse struct {
 	Range  string         `json:"range"`
 	From   time.Time      `json:"from"`
 	Totals history.Totals `json:"totals"`
+	// Prices describes the API prices the amounts are calculated with.
+	Prices pricing.State `json:"prices"`
 	// Count is the number of conversations pinged in the range;
 	// Conversations holds the limit that were pinged last, newest first.
 	Count         int                    `json:"count"`
@@ -355,7 +367,8 @@ type historyResponse struct {
 }
 
 // historyResponse answers GET /history?range=24h|7d|all&limit=N with the
-// pings summed by conversation. "all" covers the retention.
+// pings summed by conversation and round. "all" covers the retention.
+// Amounts are calculated at the current prices on every query.
 func (p *Plugin) historyResponse(query url.Values) pluginapi.ManagementResponse {
 	now := time.Now()
 	rng := query.Get("range")
@@ -382,8 +395,8 @@ func (p *Plugin) historyResponse(query url.Values) pluginapi.ManagementResponse 
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
-	convs := history.Group(events)
-	resp := historyResponse{Range: rng, From: from, Totals: history.Sum(events), Count: len(convs), Conversations: convs[:min(limit, len(convs))]}
+	convs := history.Group(events, now, p.prices.Table())
+	resp := historyResponse{Range: rng, From: from, Totals: history.Total(convs), Prices: p.prices.State(), Count: len(convs), Conversations: convs[:min(limit, len(convs))]}
 	if resp.Conversations == nil {
 		resp.Conversations = []history.Conversation{}
 	}

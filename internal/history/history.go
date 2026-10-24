@@ -9,12 +9,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/PosvdM/cpa-plugin-wick/internal/keepalive"
+	"github.com/PosvdM/cpa-plugin-wick/internal/pricing"
 )
 
 const dayLayout = "2006-01-02"
@@ -128,7 +130,7 @@ func (s *Store) Query(from time.Time) ([]keepalive.Event, error) {
 	return out, nil
 }
 
-// CountByKey counts the events from from to now by conversation key. The
+// CountByKey counts the pings from from to now by conversation key. The
 // status polls it every few seconds, so it skips the sorting of Query.
 func (s *Store) CountByKey(from time.Time) (map[string]int, error) {
 	s.mu.Lock()
@@ -144,7 +146,7 @@ func (s *Store) CountByKey(from time.Time) (map[string]int, error) {
 			return nil, err
 		}
 		for _, ev := range events {
-			if ev.Key != "" && !ev.Time.Before(from) {
+			if ev.Key != "" && ev.Kind == "" && !ev.Time.Before(from) {
 				counts[ev.Key]++
 			}
 		}
@@ -207,28 +209,135 @@ func (s *Store) pruneLocked() {
 	}
 }
 
-// Totals sums a list of events.
+// Round results.
+const (
+	// ResultSaved: the request came back while the cache of the last
+	// successful ping was alive, after the cache would have expired
+	// without the pings.
+	ResultSaved = "saved"
+	// ResultWasted: no request came back within the cache's lifetime after
+	// the last successful ping, or it came back before the cache would have
+	// expired anyway.
+	ResultWasted = "wasted"
+	// ResultPending: the cache of the last successful ping is alive and no
+	// request has come back yet.
+	ResultPending = "pending"
+	// ResultMiss and ResultFailed: the last ping wrote the cache or failed.
+	ResultMiss   = "miss"
+	ResultFailed = "failed"
+	// ResultUnknown: written before returns were recorded.
+	ResultUnknown = "unknown"
+)
+
+// cacheTTL is how long a prompt cache entry lives after it was last read.
+const cacheTTL = 5 * time.Minute
+
+// Totals sums pings and rounds.
 type Totals struct {
 	Pings               int   `json:"pings"`
 	Failed              int   `json:"failed"`
 	CacheReadTokens     int64 `json:"cache_read_tokens"`
 	CacheCreationTokens int64 `json:"cache_creation_tokens"`
+	Rounds              int   `json:"rounds"`
+	// Results counts the rounds by result.
+	Results map[string]int `json:"results"`
+	// Cost is the price of the pings and Saved the cache writes saved, in
+	// US dollars at API prices. Net is Saved minus the cost of the rounds
+	// with a result, leaving out pending ones. Rounds with ResultUnknown
+	// and rounds whose model has no price are left out of all three;
+	// Unpriced counts the latter.
+	Cost     float64 `json:"cost"`
+	Saved    float64 `json:"saved"`
+	Net      float64 `json:"net"`
+	Unpriced int     `json:"unpriced"`
 }
 
-// Sum counts the pings, failures and cache tokens of events.
-func Sum(events []keepalive.Event) Totals {
-	var t Totals
-	for _, ev := range events {
-		t.Pings++
-		if ev.Error != "" {
-			t.Failed++
+// addRound adds r; priced reports whether prices were available, so that
+// rounds are counted as unpriced only when their model has no price.
+func (t *Totals) addRound(r Round, priced bool) {
+	t.Rounds++
+	if t.Results == nil {
+		t.Results = make(map[string]int)
+	}
+	t.Results[r.Result]++
+	if r.Result == ResultUnknown {
+		return
+	}
+	if r.Cost == nil {
+		if priced {
+			t.Unpriced++
 		}
-		if ev.Usage != nil {
-			t.CacheReadTokens += ev.Usage.CacheReadTokens
-			t.CacheCreationTokens += ev.Usage.CacheCreationTokens
-		}
+		return
+	}
+	saved := 0.0
+	if r.Saved != nil {
+		saved = *r.Saved
+	}
+	t.Cost += *r.Cost
+	t.Saved += saved
+	if r.Result != ResultPending {
+		t.Net += saved - *r.Cost
+	}
+}
+
+func (t *Totals) add(o Totals) {
+	t.Pings += o.Pings
+	t.Failed += o.Failed
+	t.CacheReadTokens += o.CacheReadTokens
+	t.CacheCreationTokens += o.CacheCreationTokens
+	t.Rounds += o.Rounds
+	if t.Results == nil {
+		t.Results = make(map[string]int)
+	}
+	for k, v := range o.Results {
+		t.Results[k] += v
+	}
+	t.Cost += o.Cost
+	t.Saved += o.Saved
+	t.Net += o.Net
+	t.Unpriced += o.Unpriced
+}
+
+// Total sums the totals of conversations.
+func Total(convs []Conversation) Totals {
+	t := Totals{Results: map[string]int{}}
+	for _, c := range convs {
+		t.add(c.Totals)
 	}
 	return t
+}
+
+// Round is the pings of a conversation between two of its requests.
+type Round struct {
+	Start time.Time `json:"start"`
+	Last  time.Time `json:"last"`
+	Model string    `json:"model"`
+	Pings int       `json:"pings"`
+	// Context is the input of the last ping that reported usage.
+	Context         int64  `json:"context"`
+	CacheReadTokens int64  `json:"cache_read_tokens"`
+	Result          string `json:"result"`
+	// Return is when the request that ended the round came, and Idle the
+	// seconds from the request before it.
+	Return *time.Time `json:"return,omitempty"`
+	Idle   int64      `json:"idle,omitempty"`
+	// Cost and Saved are in US dollars at the current API prices, nil when
+	// the model has no price. Saved is set for ResultSaved only.
+	Cost  *float64 `json:"cost,omitempty"`
+	Saved *float64 `json:"saved,omitempty"`
+
+	cost     float64
+	priced   bool
+	lastRead time.Time
+	// last is the outcome of the last ping: empty for a hit, ResultMiss or
+	// ResultFailed.
+	last     string
+	judged   bool
+	returned bool
+	saved    bool
+	// savedContext is the context recorded with the return.
+	savedContext int64
+	lastPing     int
 }
 
 // Conversation sums the pings of one conversation in a range.
@@ -244,29 +353,46 @@ type Conversation struct {
 	First  time.Time `json:"first"`
 	Last   time.Time `json:"last"`
 	Totals
-	// Hits and Misses count the pings that read or wrote the cache.
-	Hits   int `json:"hits"`
-	Misses int `json:"misses"`
 	// Context is the input of the latest ping that reported usage: cached,
 	// written and uncached tokens.
 	Context int64 `json:"context"`
 	// LastError and LastStopped are those of the latest ping.
 	LastError   string `json:"last_error,omitempty"`
 	LastStopped string `json:"last_stopped,omitempty"`
+	// Detail holds the rounds, newest first.
+	Detail []Round `json:"detail"`
 }
 
 // Group sums events, oldest first, by conversation, newest conversation
-// first. Events without a conversation key, written before keys were
-// recorded, are grouped by session.
-func Group(events []keepalive.Event) []Conversation {
+// first, and splits each conversation into rounds, judged at now and priced
+// with prices, which may be nil. Events without a conversation key,
+// written before keys were recorded, are grouped by session.
+//
+// A ping numbered no higher than the one before it starts a new round, as
+// does the first ping after a return, so that rounds are rebuilt from any
+// history. A return without a ping of its round in the range is left out.
+func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Conversation {
 	index := make(map[string]int)
 	var out []Conversation
+	// open marks the conversations whose last round has no return yet.
+	open := make(map[int]bool)
 	for _, ev := range events {
 		id := ev.Key
 		if id == "" {
 			id = "session:" + ev.Session
 		}
 		i, ok := index[id]
+		if ev.Kind != "" {
+			if ok && open[i] {
+				c := &out[i]
+				r := &c.Detail[len(c.Detail)-1]
+				t := ev.Time
+				r.Return, r.Idle = &t, ev.Idle
+				r.returned, r.saved, r.savedContext = true, ev.Saved, ev.Context
+				open[i] = false
+			}
+			continue
+		}
 		if !ok {
 			i = len(out)
 			index[id] = i
@@ -276,20 +402,83 @@ func Group(events []keepalive.Event) []Conversation {
 		c.Model, c.Agent, c.Client, c.Cwd, c.Prompt = ev.Model, ev.Agent, ev.Client, ev.Cwd, ev.Prompt
 		c.Last, c.LastError, c.LastStopped = ev.Time, ev.Error, ev.Stopped
 		c.Pings++
+		if !open[i] || ev.Ping <= c.Detail[len(c.Detail)-1].lastPing {
+			c.Detail = append(c.Detail, Round{Start: ev.Time, priced: true})
+			open[i] = true
+		}
+		r := &c.Detail[len(c.Detail)-1]
+		r.Last, r.Model, r.lastPing, r.judged = ev.Time, ev.Model, ev.Ping, ev.Returns
+		r.Pings++
 		switch {
 		case ev.Error != "":
 			c.Failed++
+			r.last = ResultFailed
 		case ev.Usage != nil && ev.Usage.CacheCreationTokens > 0:
-			c.Misses++
+			r.last = ResultMiss
 		default:
-			c.Hits++
+			r.last = ""
+			r.lastRead = ev.Time
 		}
 		if ev.Usage != nil {
-			c.CacheReadTokens += ev.Usage.CacheReadTokens
-			c.CacheCreationTokens += ev.Usage.CacheCreationTokens
-			c.Context = ev.Usage.CacheReadTokens + ev.Usage.CacheCreationTokens + ev.Usage.InputTokens
+			u := ev.Usage
+			context := u.CacheReadTokens + u.CacheCreationTokens + u.InputTokens
+			c.CacheReadTokens += u.CacheReadTokens
+			c.CacheCreationTokens += u.CacheCreationTokens
+			c.Context, r.Context = context, context
+			r.CacheReadTokens += u.CacheReadTokens
+			// The stream is closed at message_start, so output is not
+			// counted.
+			if rates, ok := prices.Lookup(ev.Model, context); ok {
+				r.cost += pricing.Cost(u.CacheReadTokens, rates.Read) + pricing.Cost(u.CacheCreationTokens, rates.Write5m) + pricing.Cost(u.InputTokens, rates.Input)
+			} else {
+				r.priced = false
+			}
 		}
+	}
+	for i := range out {
+		c := &out[i]
+		for j := range c.Detail {
+			r := &c.Detail[j]
+			r.judge(now, prices)
+			c.addRound(*r, prices != nil)
+		}
+		slices.Reverse(c.Detail)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Last.After(out[j].Last) })
 	return out
+}
+
+// judge sets the result and the amounts of r at now.
+func (r *Round) judge(now time.Time, prices *pricing.Table) {
+	// A return comes first: a ping still in flight when the request came
+	// back may miss or fail after the return was judged.
+	switch {
+	case r.returned && r.saved:
+		r.Result = ResultSaved
+	case r.returned:
+		r.Result = ResultWasted
+	case r.last != "":
+		r.Result = r.last
+	case !r.judged:
+		r.Result = ResultUnknown
+	case now.Before(r.lastRead.Add(cacheTTL)):
+		r.Result = ResultPending
+	default:
+		r.Result = ResultWasted
+	}
+	if prices == nil || !r.priced {
+		return
+	}
+	cost := r.cost
+	r.Cost = &cost
+	if r.Result == ResultSaved {
+		// The request that came back read the context from the cache
+		// instead of writing it again.
+		if rates, ok := prices.Lookup(r.Model, r.savedContext); ok {
+			saved := pricing.Cost(r.savedContext, rates.Write5m-rates.Read)
+			r.Saved = &saved
+		} else {
+			r.Cost = nil
+		}
+	}
 }

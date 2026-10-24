@@ -1,12 +1,14 @@
 package history
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/PosvdM/cpa-plugin-wick/internal/keepalive"
+	"github.com/PosvdM/cpa-plugin-wick/internal/pricing"
 )
 
 func newStore(t *testing.T, now time.Time) (*Store, string) {
@@ -38,16 +40,17 @@ func TestAppendAndQuery(t *testing.T) {
 	if err != nil || len(got) != 2 || got[0].Key != "a" || got[1].Key != "b" {
 		t.Fatalf("events %+v err %v", got, err)
 	}
-	if sum := Sum(got); sum.Pings != 2 || sum.Failed != 1 || sum.CacheReadTokens != 100 {
+	if sum := Total(Group(got, now, nil)); sum.Pings != 2 || sum.Failed != 1 || sum.CacheReadTokens != 100 {
 		t.Fatalf("totals %+v", sum)
 	}
+	s.Append(keepalive.Event{Time: now.Add(-90 * time.Minute), Key: "a", Kind: keepalive.KindReturn})
 	if counts, err := s.CountByKey(now.Add(-48 * time.Hour)); err != nil || counts["old"] != 1 || counts["a"] != 1 || counts["b"] != 1 {
 		t.Fatalf("counts %v err %v", counts, err)
 	}
 	// A cached day file is read again after it changes.
 	s.Append(keepalive.Event{Time: now.Add(-time.Minute), Key: "c"})
-	if got, _ := s.Query(now.Add(-24 * time.Hour)); len(got) != 3 {
-		t.Fatalf("events %d after an append, want 3", len(got))
+	if got, _ := s.Query(now.Add(-24 * time.Hour)); len(got) != 4 {
+		t.Fatalf("events %d after an append, want 4", len(got))
 	}
 }
 
@@ -77,16 +80,93 @@ func TestGroup(t *testing.T) {
 		{Time: now.Add(9 * time.Minute), Key: "a", Session: "s", Model: "m2", Ping: 1, Usage: &keepalive.Usage{CacheReadTokens: 10, CacheCreationTokens: 130, InputTokens: 1}, Stopped: "cache_miss"},
 		{Time: now.Add(2 * time.Minute), Session: "old"},
 	}
-	got := Group(events)
+	got := Group(events, now.Add(time.Hour), nil)
 	if len(got) != 3 || got[0].Key != "a" || got[1].Session != "old" || got[2].Key != "b" {
 		t.Fatalf("groups %+v", got)
 	}
 	a := got[0]
-	if a.Pings != 3 || a.Hits != 2 || a.Misses != 1 || a.Failed != 0 || a.CacheReadTokens != 230 || a.CacheCreationTokens != 130 ||
+	if a.Pings != 3 || a.Rounds != 2 || a.Failed != 0 || a.CacheReadTokens != 230 || a.CacheCreationTokens != 130 ||
 		a.Context != 141 || a.Model != "m2" || !a.First.Equal(now) || !a.Last.Equal(now.Add(9*time.Minute)) || a.LastStopped != "cache_miss" {
 		t.Fatalf("conversation a %+v", a)
 	}
-	if b := got[2]; b.Failed != 1 || b.LastError != "boom" || b.Context != 0 {
+	// Written before returns were recorded, so the first round is unknown.
+	if r := a.Totals.Results; r[ResultMiss] != 1 || r[ResultUnknown] != 1 {
+		t.Fatalf("results %v", r)
+	}
+	if b := got[2]; b.Failed != 1 || b.LastError != "boom" || b.Context != 0 || b.Totals.Results[ResultFailed] != 1 {
 		t.Fatalf("conversation b %+v", b)
 	}
 }
+
+func TestRoundsAndAmounts(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	at := func(minutes int) time.Time { return now.Add(time.Duration(minutes) * time.Minute) }
+	hit := &keepalive.Usage{CacheReadTokens: 100000}
+	ping := func(minutes, n int, usage *keepalive.Usage) keepalive.Event {
+		return keepalive.Event{Time: at(minutes), Key: "a", Model: "claude-opus-5-5", Ping: n, Usage: usage, Returns: true}
+	}
+	back := func(minutes int, saved bool) keepalive.Event {
+		return keepalive.Event{Time: at(minutes), Key: "a", Kind: keepalive.KindReturn, Returns: true, Saved: saved, Context: 100000, Idle: 600}
+	}
+	events := []keepalive.Event{
+		// Saved: back within the cache's lifetime after the last ping.
+		ping(-60, 1, hit), ping(-55, 2, hit), back(-52, true),
+		// Wasted: no return within five minutes of the last ping.
+		ping(-40, 1, hit),
+		// Wasted: back too early.
+		ping(-30, 1, hit), back(-29, false),
+		// Miss: the ping wrote the cache.
+		ping(-10, 1, &keepalive.Usage{CacheCreationTokens: 100000}),
+		// Pending: the cache of the last ping is alive.
+		ping(-2, 1, hit),
+		// A return without a ping of its round in the range is left out.
+		{Time: at(-1), Key: "z", Kind: keepalive.KindReturn, Saved: true},
+		// No price for the model.
+		{Time: at(-20), Key: "b", Model: "gpt-5", Ping: 1, Usage: hit, Returns: true},
+	}
+	prices := &pricing.Table{Models: []pricing.Model{{Family: "opus", Version: "5.5", Tiers: []pricing.Tier{{Rates: pricing.Rates{Input: 4, Write5m: 5, Write1h: 8, Read: 0.2, Output: 20}}}}}}
+	got := Group(events, now, prices)
+	if len(got) != 2 || got[0].Key != "a" {
+		t.Fatalf("groups %+v", got)
+	}
+	a := got[0]
+	want := []string{ResultPending, ResultMiss, ResultWasted, ResultWasted, ResultSaved}
+	if len(a.Detail) != len(want) {
+		t.Fatalf("rounds %+v", a.Detail)
+	}
+	for i, r := range a.Detail {
+		if r.Result != want[i] {
+			t.Errorf("round %d result %s, want %s", i, r.Result, want[i])
+		}
+	}
+	saved := a.Detail[4]
+	if saved.Pings != 2 || saved.Return == nil || saved.Idle != 600 || saved.Saved == nil || !near(*saved.Saved, 0.48) || !near(*saved.Cost, 0.04) {
+		t.Fatalf("saved round %+v", saved)
+	}
+	if a.Saved != *saved.Saved || !near(a.Cost, 0.6) || !near(a.Net, 0.48-0.58) || a.Unpriced != 0 {
+		t.Fatalf("totals %+v", a.Totals)
+	}
+	if b := got[1]; b.Detail[0].Cost != nil || b.Unpriced != 1 || b.Cost != 0 {
+		t.Fatalf("unpriced conversation %+v", b)
+	}
+	total := Total(got)
+	if total.Rounds != 6 || total.Results[ResultWasted] != 3 || total.Unpriced != 1 || !near(total.Net, a.Net) {
+		t.Fatalf("total %+v", total)
+	}
+	// Without prices there are no amounts, and no round counts as unpriced.
+	noPrices := Group(events, now, nil)
+	if r := noPrices[0].Detail[4]; r.Cost != nil || r.Saved != nil || r.Result != ResultSaved {
+		t.Fatalf("round without prices %+v", r)
+	}
+	if u := Total(noPrices).Unpriced; u != 0 {
+		t.Fatalf("unpriced %d without prices", u)
+	}
+	// A ping in flight when the request came back may fail after the
+	// return; the return decides.
+	late := []keepalive.Event{ping(-20, 1, hit), {Time: at(-18), Key: "a", Model: "claude-opus-5-5", Ping: 2, Error: "boom", Returns: true}, back(-17, true)}
+	if r := Group(late, now, prices)[0].Detail[0]; r.Result != ResultSaved || r.Pings != 2 {
+		t.Fatalf("round with a failed ping in flight %+v", r)
+	}
+}
+
+func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
