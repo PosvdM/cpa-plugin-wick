@@ -33,6 +33,9 @@ type Config struct {
 	// SubagentDurationMinutes replaces DurationMinutes for subagents. 0
 	// leaves subagents out.
 	SubagentDurationMinutes int `yaml:"subagent_duration_minutes" json:"subagent_duration_minutes"`
+	// OtherClients opts non-native Claude Messages clients into 5m caching and pings.
+	// It defaults to false because CPA's caller-keyed tool aliases can differ on replay.
+	OtherClients bool `yaml:"other_clients" json:"other_clients"`
 	// MinBodyKB skips requests whose body is smaller than this many KiB.
 	MinBodyKB int `yaml:"min_body_kb" json:"min_body_kb"`
 	// HistoryRetentionDays is how many days of ping history are kept on disk.
@@ -44,7 +47,7 @@ type Config struct {
 
 // Default returns the default settings.
 func Default() Config {
-	return Config{IntervalMin: 260, IntervalMax: 290, DurationMinutes: 30, SubagentDurationMinutes: 15, MinBodyKB: 64, HistoryRetentionDays: 40}
+	return Config{IntervalMin: 260, IntervalMax: 290, DurationMinutes: 30, SubagentDurationMinutes: 15, OtherClients: false, MinBodyKB: 64, HistoryRetentionDays: 40}
 }
 
 // Parse decodes the plugin config subtree. Missing keys keep their defaults.

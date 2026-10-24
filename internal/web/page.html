@@ -52,16 +52,13 @@
         <button type="button" class="seg" data-value="all" aria-pressed="false" data-i18n="range_all">全部</button>
       </div>
     </div>
+    <div id="compare-wrap" hidden>
+      <div class="cost-summary"><p id="cost-headline"></p><p id="cost-deltas"></p></div>
+      <div id="cost-bars" class="cost-bars"></div>
+      <p id="cost-stats" class="cost-stats"></p>
+    </div>
     <p id="totals" class="totals"></p>
     <p id="totals-notes" class="hint totals-notes"></p>
-    <div id="compare-wrap" class="table-wrap" hidden>
-      <table class="compare">
-        <thead>
-          <tr><th></th><th class="num" data-i18n="col_cache_cost" data-i18n-title="cache_cost_hint">缓存花费</th><th class="num" data-i18n="col_vs_none">比不挑灯</th></tr>
-        </thead>
-        <tbody id="compare"></tbody>
-      </table>
-    </div>
     <p id="price-hint" class="hint"></p>
   </section>
 
@@ -118,6 +115,10 @@
           <label id="custom-subagent-minutes" class="inline-input" hidden><input name="subagent_duration_minutes" type="number" min="0" max="1440" step="1"><span data-i18n="minutes_unit">分钟</span></label>
         </div>
         <p id="subagent-hint" class="hint"></p>
+      </div>
+      <div class="field other-clients">
+        <label class="toggle-label"><input name="other_clients" type="checkbox" role="switch"><span class="field-label" data-i18n="other_clients">其他客户端</span></label>
+        <p class="hint" data-i18n="other_clients_hint">默认关闭。CPA 工具别名可能使挑灯读不到缓存；仅在确认缓存可命中时开启，为 pi 等客户端使用 5 分钟缓存。关闭后停止挑灯，后续请求原样交给 CPA。</p>
       </div>
       <details class="advanced">
         <summary><span data-i18n="advanced">高级设置</span><span class="summary-note" data-i18n="advanced_scope">对所有对话生效</span></summary>

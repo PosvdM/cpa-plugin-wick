@@ -124,7 +124,7 @@
       conversations: "正在挑灯的对话",
       col_conversation: "对话", col_model: "模型", col_model_account: "模型 / 账号", col_context: "上下文", col_pings: "本轮挑灯",
       col_idle: "空闲", col_next: "下次挑灯", col_duration: "时长",
-      no_conversations: "没有正在挑灯的对话。Claude Code 发出请求后，对话显示在这里。",
+      no_conversations: "没有正在挑灯的对话。客户端发出符合条件的请求后，对话显示在这里。",
       subagent: "子代理", no_prompt: "（没有文字）",
       session_hint: "会话 {0}", key_hint_short: "对话键 {0}", directory_hint: "目录 {0}",
       context_pending: "首次挑灯后显示",
@@ -139,13 +139,21 @@
       range_label_24h: "近 24 小时", range_label_7d: "近 7 天", range_label_1m: "近 1 个月", range_label_all: "保留的 {0} 天内",
       savings: "花费对比",
       totals_priced: "{0}挑灯 {1}（{2}），花费 {3}；{4}等到你回来，省下 {5}；{6}。",
-      totals_compared: "{0}挑灯 {1}（{2}），花费 {3}；{4}等到你回来，省下 {5}。",
       totals_plain: "{0}挑灯 {1}（{2}），{3}等到你回来。",
       net_saved: "净省 {0}", net_cost: "净耗 {0}",
       totals_failed: "其中 {0}失败。",
       totals_unpriced: "{0}的模型在定价页上找不到价格，不计入金额。",
-      col_cache_cost: "缓存花费", cache_cost_hint: "缓存读取和写入的花费；“挑灯”一行另含挑灯本身的花费。", col_vs_none: "比不挑灯",
-      plan_none: "不挑灯", plan_wick: "挑灯", plan_hour: "1 小时缓存", vs_less: "省 {0}", vs_more: "多 {0}",
+      plan_none: "不挑灯", plan_wick: "挑灯（当前）", plan_hour: "1 小时缓存",
+      cost_saves: "挑灯省下 {0}", cost_costs: "挑灯多花 {0}",
+      percent_less: "比不挑灯便宜 {0}%", percent_more: "比不挑灯贵 {0}%",
+      hour_less: "比 1 小时缓存便宜 {0}", hour_more: "比 1 小时缓存贵 {0}",
+      wick_breakdown: "缓存 {0} + 挑灯 {1}", none_breakdown: "缓存 {0} + 过期重写 {1}",
+      hour_breakdown: "缓存按 1 小时写入价和读取价计算，不挑灯",
+      cost_pings: "挑灯 {0} 次", cost_rounds: "{0} 轮", cost_saved: "{0} 轮等到你回来", cost_wasted: "{0} 轮白挑", cost_pending: "{0} 轮挑灯中",
+      pending_note: "待定轮次的挑灯花费已计入；缓存过期或请求回来后确定结果。",
+      coverage_note: "实际统计自 {0} 起。请求用量从 v0.6.0 起记录，较早数据无法用于完整花费对比。",
+      compare_unpriced: "{0} 个请求或轮次没有模型价格，不计入金额。",
+      other_clients: "其他客户端", other_clients_hint: "默认关闭。CPA 工具别名可能使挑灯读不到缓存；仅在确认缓存可命中时开启，为 pi 等客户端使用 5 分钟缓存。关闭后停止挑灯，后续请求原样交给 CPA。",
       n_pings: "{0} 次", n_ping: "{0} 次", n_rounds: "{0} 轮", n_round: "{0} 轮",
       col_time: "最后挑灯", col_rounds: "挑灯", col_cost: "花费", col_saved: "省下", col_result: "结果",
       col_round_time: "时间", col_round_pings: "本轮次数", col_read: "缓存读取",
@@ -189,7 +197,7 @@
       conversations: "Conversations kept lit",
       col_conversation: "Conversation", col_model: "Model", col_model_account: "Model / Account", col_context: "Context", col_pings: "This round",
       col_idle: "Idle", col_next: "Next ping", col_duration: "Keep lit",
-      no_conversations: "No conversations are kept lit. Conversations appear here after Claude Code sends a request.",
+      no_conversations: "No conversations are kept lit. Conversations appear here after a client sends an eligible request.",
       subagent: "Subagent", no_prompt: "(no text)",
       session_hint: "Session {0}", key_hint_short: "Conversation key {0}", directory_hint: "Directory {0}",
       context_pending: "Shown after the first ping",
@@ -204,13 +212,21 @@
       range_label_24h: "Last 24 hours", range_label_7d: "Last 7 days", range_label_1m: "Last month", range_label_all: "All {0} days kept",
       savings: "Cost comparison",
       totals_priced: "{0}: {1} in {2}, costing {3}; you came back in time for {4}, saving {5}; {6}.",
-      totals_compared: "{0}: {1} in {2}, costing {3}; you came back in time for {4}, saving {5}.",
       totals_plain: "{0}: {1} in {2}; you came back in time for {3}.",
       net_saved: "net saving {0}", net_cost: "net cost {0}",
       totals_failed: "{0} failed.",
       totals_unpriced: "{0} with a model missing from the pricing page are shown without amounts.",
-      col_cache_cost: "Cache cost", cache_cost_hint: "Cache reads and writes; the Wick row also includes the pings.", col_vs_none: "Versus no pings",
-      plan_none: "No pings", plan_wick: "Wick", plan_hour: "1-hour cache", vs_less: "{0} less", vs_more: "{0} more",
+      plan_none: "No Wick", plan_wick: "Wick · Current", plan_hour: "1-hour cache",
+      cost_saves: "Wick saves {0} vs no Wick", cost_costs: "Wick costs {0} more vs no Wick",
+      percent_less: "{0}% cheaper vs no Wick", percent_more: "{0}% more vs no Wick",
+      hour_less: "{0} cheaper vs 1-hour cache", hour_more: "{0} more vs 1-hour cache",
+      wick_breakdown: "Cache {0} + pings {1}", none_breakdown: "Cache {0} + expired-cache rewrites {1}",
+      hour_breakdown: "Cache at 1-hour write and read prices, without pings",
+      cost_pings: "{0} pings", cost_rounds: "{0} rounds", cost_saved: "{0} rounds you returned to", cost_wasted: "{0} wasted rounds", cost_pending: "{0} rounds still lit",
+      pending_note: "Pending rounds include their ping costs; results settle when the cache expires or a request returns.",
+      coverage_note: "Actual coverage starts {0}. Request usage is recorded from v0.6.0; older data cannot support the full cost comparison.",
+      compare_unpriced: "{0} requests or rounds have no model price and are excluded from amounts.",
+      other_clients: "Other clients", other_clients_hint: "Off by default. CPA tool aliases can prevent cache hits on replay. Enable only after verifying cache hits, to keep pi and other clients lit with a 5-minute cache. Turning this off stops their pings and passes subsequent requests unchanged to CPA.",
       n_pings: "{0} pings", n_ping: "{0} ping", n_rounds: "{0} rounds", n_round: "{0} round",
       col_time: "Last ping", col_rounds: "Pings", col_cost: "Cost", col_saved: "Saved", col_result: "Result",
       col_round_time: "Time", col_round_pings: "Pings", col_read: "Cache read",
@@ -743,15 +759,18 @@
     var pings = count(t.pings || 0, "n_ping", "n_pings");
     var rounds = count(t.rounds || 0, "n_round", "n_rounds");
     var saved = count(results.saved || 0, "n_round", "n_rounds");
-    // The table shows what the pings saved net, so the line leaves it out.
-    if (compared) $("totals").textContent = translate("totals_compared", range, pings, rounds, fmtMoney(t.cost || 0), saved, fmtMoney(t.saved || 0));
-    else if (priced) {
+    $("totals").hidden = compared;
+    if (priced) {
       $("totals").textContent = translate("totals_priced", range, pings, rounds, fmtMoney(t.cost || 0), saved, fmtMoney(t.saved || 0),
         translate((t.net || 0) >= 0 ? "net_saved" : "net_cost", fmtMoney(t.net || 0)));
     } else $("totals").textContent = translate("totals_plain", range, pings, rounds, saved);
     var notes = [];
-    if (t.failed) notes.push(translate("totals_failed", count(t.failed, "n_ping", "n_pings")));
-    if (t.unpriced && priced) notes.push(translate("totals_unpriced", count(t.unpriced, "n_round", "n_rounds")));
+    var scoped = compared ? cmp : t;
+    if (scoped.failed) notes.push(translate("totals_failed", count(scoped.failed, "n_ping", "n_pings")));
+    if (scoped.unpriced && priced) notes.push(compared ? translate("compare_unpriced", scoped.unpriced) : translate("totals_unpriced", count(scoped.unpriced, "n_round", "n_rounds")));
+    if (compared && (cmp.results || {}).pending) notes.push(translate("pending_note"));
+    var since = parseTime(cmp.since), from = parseTime(data.from);
+    if (compared && since && from && since > from) notes.push(translate("coverage_note", since.toLocaleString(lang === "zh" ? "zh-CN" : "en-US")));
     $("totals-notes").textContent = notes.join(lang === "zh" ? "" : " ");
     renderCompare(compared ? cmp : null);
     renderPriceHint(data);
@@ -759,21 +778,33 @@
 
   function renderCompare(cmp) {
     $("compare-wrap").hidden = !cmp;
-    var body = $("compare");
+    var body = $("cost-bars");
     clear(body);
     if (!cmp) return;
-    var none = (cmp.cache || 0) + (cmp.saved || 0);
-    function row(label, cost, base) {
-      var diff = none - cost;
-      body.appendChild(el("tr", null, [
-        el("td", { text: translate(label) }),
-        el("td", { class: "num", text: fmtMoney(cost) }),
-        el("td", { class: "num", text: base ? "—" : translate(diff >= 0 ? "vs_less" : "vs_more", fmtMoney(diff)) })
+    var diff = cmp.difference || 0, hourDiff = cmp.hour_difference || 0;
+    $("cost-headline").className = diff >= 0 ? "cost-success" : "cost-warning";
+    $("cost-headline").textContent = translate(diff >= 0 ? "cost_saves" : "cost_costs", fmtMoney(diff));
+    var deltas = [];
+    if (typeof cmp.percent === "number") deltas.push(translate(cmp.percent >= 0 ? "percent_less" : "percent_more", Math.abs(cmp.percent).toFixed(1)));
+    deltas.push(translate(hourDiff >= 0 ? "hour_less" : "hour_more", fmtMoney(hourDiff)));
+    $("cost-deltas").textContent = deltas.join(" · ");
+    var max = Math.max(cmp.wick || 0, cmp.hour || 0, cmp.none || 0);
+    function bar(label, cost, detail, primary) {
+      body.appendChild(el("div", { class: "cost-row" + (primary ? " cost-current" : "") }, [
+        el("span", { class: "cost-label", text: translate(label) }),
+        el("div", { class: "cost-track", "aria-hidden": "true" }, [el("div", { class: "cost-fill", style: "width:" + (max > 0 ? cost / max * 100 : 0) + "%" })]),
+        el("strong", { class: "cost-amount", text: fmtMoney(cost) }),
+        el("p", { class: "cost-detail", text: detail })
       ]));
     }
-    row("plan_none", none, true);
-    row("plan_wick", (cmp.cache || 0) + (cmp.pings || 0));
-    row("plan_hour", cmp.hour || 0);
+    bar("plan_wick", cmp.wick || 0, translate("wick_breakdown", fmtMoney(cmp.cache || 0), fmtMoney(cmp.pings || 0)), true);
+    bar("plan_hour", cmp.hour || 0, translate("hour_breakdown"));
+    bar("plan_none", cmp.none || 0, translate("none_breakdown", fmtMoney(cmp.cache || 0), fmtMoney(cmp.saved || 0)));
+    var stats = [], results = cmp.results || {};
+    [["cost_pings", cmp.ping_count], ["cost_rounds", cmp.rounds], ["cost_saved", results.saved], ["cost_wasted", results.wasted], ["cost_pending", results.pending]].forEach(function (item) {
+      if (item[1]) stats.push(translate(item[0], item[1]));
+    });
+    $("cost-stats").textContent = stats.join(" · ");
   }
 
   function renderPriceHint(data) {
@@ -1032,7 +1063,7 @@
   // when the key is not set.
   function configValue(name) {
     var value = rawConfig[name];
-    if (typeof value === "number") return value;
+    if (typeof value === "number" || typeof value === "boolean") return value;
     return status && status.config ? status.config[name] : undefined;
   }
 
@@ -1048,6 +1079,7 @@
   function form() { return $("settings"); }
 
   function fillSettings() {
+    form().elements.other_clients.checked = configValue("other_clients") === true;
     FIELDS.forEach(function (name) {
       var value = configValue(name);
       var input = form().elements[name];
@@ -1106,6 +1138,10 @@
   function saveField(event) {
     var input = event.target;
     var name = input.name;
+    if (name === "other_clients") {
+      if (input.checked !== configValue(name)) save({ other_clients: input.checked });
+      return;
+    }
     if (FIELDS.indexOf(name) < 0) return;
     var value = wholeNumber(input.value);
     if (value === null) {

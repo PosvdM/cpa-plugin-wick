@@ -162,9 +162,11 @@ func (p *Plugin) handle(method string, request []byte) ([]byte, error) {
 		// The struct has no JSON tags, so the host sends Go field names.
 		var req pluginapi.RequestInterceptRequest
 		if err := json.Unmarshal(request, &req); err == nil {
-			p.manager.Observe(req)
+			if body := p.manager.Observe(req); len(body) > 0 {
+				return ok(struct{ Body []byte }{Body: body})
+			}
 		}
-		// An empty response passes the request through unchanged.
+		// Native and skipped requests pass through without a Body field.
 		return ok(struct{}{})
 	case pluginabi.MethodRequestInterceptBefore:
 		return ok(struct{}{})
@@ -215,6 +217,7 @@ func (p *Plugin) registration() registration {
 				field("interval_max", pluginapi.ConfigFieldTypeInteger, "最长挑灯间隔（秒），不超过 299 / Longest interval between pings in seconds, at most 299"),
 				field("duration_minutes", pluginapi.ConfigFieldTypeInteger, "对话空闲后挑灯多少分钟，0 为关闭 / Minutes an idle conversation is kept lit; 0 turns Wick off"),
 				field("subagent_duration_minutes", pluginapi.ConfigFieldTypeInteger, "子代理空闲后挑灯多少分钟，0 为不挑灯 / Minutes an idle subagent is kept lit; 0 leaves them out"),
+				field("other_clients", pluginapi.ConfigFieldTypeBoolean, "为其他 Claude Messages 客户端挑灯，默认关闭；CPA 工具别名可能使重放无法读取缓存，仅在确认缓存可命中时开启 / Keep other Claude Messages clients lit, off by default; CPA tool aliases can prevent cache hits on replay, so enable only after verifying cache hits"),
 				field("min_body_kb", pluginapi.ConfigFieldTypeInteger, "请求体小于此大小（KiB）时不挑灯 / Skip requests whose body is smaller than this many KiB"),
 				field("history_retention_days", pluginapi.ConfigFieldTypeInteger, "挑灯记录保留天数 / Days of ping history to keep"),
 				field("data_dir", pluginapi.ConfigFieldTypeString, "数据目录，默认 <插件目录>/data/wick / Data directory, <plugins dir>/data/wick by default"),

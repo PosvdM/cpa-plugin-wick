@@ -71,6 +71,7 @@ type savedConversation struct {
 // savedRequest is the first line of a request file. The request body
 // follows it unchanged, so that the replay stays byte for byte the same.
 type savedRequest struct {
+	Other     bool        `json:"other,omitempty"`
 	Session   string      `json:"session"`
 	Agent     string      `json:"agent,omitempty"`
 	Key       string      `json:"key"`
@@ -222,6 +223,7 @@ func (s *convStore) write(convs []savedConversation) error {
 
 func encodeRequest(req request) []byte {
 	head, _ := json.Marshal(savedRequest{
+		Other:     req.Other,
 		Session:   req.Session,
 		Agent:     req.Agent,
 		Key:       req.Key,
@@ -249,6 +251,7 @@ func decodeRequest(raw []byte) (request, error) {
 		return request{}, err
 	}
 	return request{
+		Other:     saved.Other,
 		Session:   saved.Session,
 		Agent:     saved.Agent,
 		Key:       saved.Key,

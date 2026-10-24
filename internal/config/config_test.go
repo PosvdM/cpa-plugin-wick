@@ -11,7 +11,7 @@ func TestParseEmptyUsesDefaults(t *testing.T) {
 	if err != nil || cfg != Default() {
 		t.Fatalf("cfg %+v err %v", cfg, err)
 	}
-	if cfg.IntervalMin != 260 || cfg.IntervalMax != 290 || cfg.DurationMinutes != 30 || cfg.SubagentDurationMinutes != 15 || cfg.MinBodyKB != 64 || cfg.HistoryRetentionDays != 40 || cfg.DataDir != "" {
+	if cfg.OtherClients || cfg.IntervalMin != 260 || cfg.IntervalMax != 290 || cfg.DurationMinutes != 30 || cfg.SubagentDurationMinutes != 15 || cfg.MinBodyKB != 64 || cfg.HistoryRetentionDays != 40 || cfg.DataDir != "" {
 		t.Fatalf("defaults %+v", cfg)
 	}
 }
@@ -24,7 +24,7 @@ func TestParseKeepsMissingKeys(t *testing.T) {
 }
 
 func TestParseRejectsInvalidIntervals(t *testing.T) {
-	for _, raw := range []string{"interval_max: 300\n", "interval_min: 200\ninterval_max: 100\n", "interval_min: 0\n", "duration_minutes: -1\n", "duration_minutes: 1441\n", "subagent_duration_minutes: -1\n", "history_retention_days: 0\n"} {
+	for _, raw := range []string{"interval_max: 300\n", "interval_min: 200\ninterval_max: 100\n", "interval_min: 0\n", "duration_minutes: -1\n", "duration_minutes: 1441\n", "subagent_duration_minutes: -1\n", "history_retention_days: 0\n", "other_clients: nope\n", "other_clients: 3\n"} {
 		cfg, err := Parse([]byte(raw))
 		if err == nil || cfg != Default() {
 			t.Errorf("%q: cfg %+v err %v", raw, cfg, err)

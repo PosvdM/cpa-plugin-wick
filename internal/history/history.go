@@ -313,10 +313,11 @@ func Total(convs []Conversation) Totals {
 
 // Round is the pings of a conversation between two of its requests.
 type Round struct {
-	Start time.Time `json:"start"`
-	Last  time.Time `json:"last"`
-	Model string    `json:"model"`
-	Pings int       `json:"pings"`
+	Start  time.Time `json:"start"`
+	Last   time.Time `json:"last"`
+	Model  string    `json:"model"`
+	Pings  int       `json:"pings"`
+	Failed int       `json:"failed"`
 	// Context is the input of the last ping that reported usage.
 	Context         int64  `json:"context"`
 	CacheReadTokens int64  `json:"cache_read_tokens"`
@@ -419,8 +420,9 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 		switch {
 		case ev.Error != "":
 			c.Failed++
+			r.Failed++
 			r.last = ResultFailed
-		case ev.Usage != nil && ev.Usage.CacheCreationTokens > 0:
+		case ev.Stopped == "cache_miss" || (ev.Usage != nil && (ev.Usage.CacheReadTokens <= 0 || ev.Usage.CacheCreationTokens > 0)):
 			r.last = ResultMiss
 		default:
 			r.last = ""
@@ -500,6 +502,17 @@ type Comparison struct {
 	// nil when there is none.
 	Since    *time.Time `json:"since,omitempty"`
 	Requests int        `json:"requests"`
+	// Counts cover the same rounds as the comparison, including unpriced rounds.
+	PingCount int            `json:"ping_count"`
+	Failed    int            `json:"failed"`
+	Rounds    int            `json:"rounds"`
+	Results   map[string]int `json:"results"`
+	// Wick and None are full cache costs. Differences are positive for savings.
+	Wick           float64  `json:"wick"`
+	None           float64  `json:"none"`
+	Difference     float64  `json:"difference"`
+	Percent        *float64 `json:"percent,omitempty"`
+	HourDifference float64  `json:"hour_difference"`
 	// Cache is what the requests paid for cache reads and 5-minute writes.
 	Cache float64 `json:"cache"`
 	// Pings is the cost of the pings and Saved the cache writes they saved.
@@ -558,7 +571,17 @@ func Compare(events []keepalive.Event, convs []Conversation, prices *pricing.Tab
 			if r.Return != nil {
 				end = *r.Return
 			}
-			if end.Before(*out.Since) || r.Result == ResultUnknown {
+			if end.Before(*out.Since) {
+				continue
+			}
+			out.PingCount += r.Pings
+			out.Failed += r.Failed
+			out.Rounds++
+			if out.Results == nil {
+				out.Results = make(map[string]int)
+			}
+			out.Results[r.Result]++
+			if r.Result == ResultUnknown {
 				continue
 			}
 			if r.Cost == nil {
@@ -576,6 +599,13 @@ func Compare(events []keepalive.Event, convs []Conversation, prices *pricing.Tab
 				}
 			}
 		}
+	}
+	out.Wick, out.None = out.Cache+out.Pings, out.Cache+out.Saved
+	out.Difference = out.None - out.Wick
+	out.HourDifference = out.Hour - out.Wick
+	if out.None > 0 {
+		percent := out.Difference / out.None * 100
+		out.Percent = &percent
 	}
 	return out
 }

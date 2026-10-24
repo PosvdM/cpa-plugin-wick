@@ -210,6 +210,11 @@ func (m *Manager) Configure(cfg config.Config) {
 	m.cfg = cfg
 	m.stopped = false
 	for key, c := range m.convs {
+		if c.req.Other && !cfg.OtherClients {
+			m.removeLocked(key)
+			m.logLocked("info", "other clients disabled, keep-alive stopped", c.req, c.pings, stopDisabled)
+			continue
+		}
 		if m.doneLocked(c) {
 			m.retireLocked(key, c)
 			m.logLocked("info", "duration shortened, keep-alive stopped", c.req, c.pings, stopUntil)
@@ -220,7 +225,7 @@ func (m *Manager) Configure(cfg config.Config) {
 // doneLocked reports whether c needs no more pings: Wick is off for it, or
 // its cache already lasts until the end of its duration.
 func (m *Manager) doneLocked(c *conversation) bool {
-	return m.defaultMinutesLocked(c.req) == 0 || !m.untilLocked(c).After(c.lastRead.Add(cacheTTL))
+	return (c.req.Other && !m.cfg.OtherClients) || m.defaultMinutesLocked(c.req) == 0 || !m.untilLocked(c).After(c.lastRead.Add(cacheTTL))
 }
 
 // defaultMinutesLocked returns the configured duration of req's
@@ -305,27 +310,49 @@ func (m *Manager) Stop() {
 	}
 }
 
-// Observe records an intercepted request. It runs on the request path, so it
-// only copies the request and schedules a timer.
-func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) {
+// Observe records an intercepted request and schedules it. For eligible
+// non-native clients it returns the pinned body CPA must send; otherwise nil.
+func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) []byte {
 	m.mu.Lock()
-	minBody := m.cfg.MinBodyKB * 1024
+	minBody, otherClients := m.cfg.MinBodyKB*1024, m.cfg.OtherClients
 	m.mu.Unlock()
-	req, skip := parseRequest(in, minBody)
+	req, skip := parseRequest(in, minBody, otherClients)
 	if skip == skipTTL1h {
+		identity := ""
+		if req.Other {
+			identity = cacheIdentityKey(in.Body)
+		}
 		m.mu.Lock()
-		if _, ok := m.convs[req.Key]; ok {
-			m.removeLocked(req.Key)
-			m.logLocked("info", "1h cache in use, keep-alive not needed", req, 0, stopTTL1h)
+		for key, c := range m.convs {
+			if req.Other {
+				if !c.req.Other || c.req.Session != req.Session || c.req.Agent != req.Agent || c.req.Model != req.Model {
+					continue
+				}
+				if identity == "" || cacheIdentityKey(c.req.Body) != identity {
+					continue
+				}
+			} else if key != req.Key {
+				continue
+			}
+			m.removeLocked(key)
+			m.logLocked("info", "1h cache in use, keep-alive not needed", c.req, 0, stopTTL1h)
 		}
 		m.mu.Unlock()
-		return
+		return nil
 	}
 	if skip != "" {
-		return
+		return nil
 	}
 
 	m.mu.Lock()
+	// Pin the outgoing body only when Wick can actually keep this client lit.
+	if req.Other && (m.stopped || !m.cfg.OtherClients || m.defaultMinutesLocked(req) <= 5) {
+		// A new request resets a per-conversation duration. Do not keep
+		// replaying the previous request when its default needs no pings.
+		m.removeLocked(req.Key)
+		m.mu.Unlock()
+		return nil
+	}
 	// Taken under the lock, so that a return is never earlier than the
 	// start of a ping counted before it.
 	ret, returned := m.observeLocked(req, m.clock.Now())
@@ -337,6 +364,10 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) {
 			m.host.Log("warn", "wick: write ping history: "+err.Error(), nil)
 		}
 	}
+	if req.Other {
+		return req.Body
+	}
+	return nil
 }
 
 // observeLocked tracks req and returns the event to record when req ends a
@@ -710,10 +741,10 @@ func (m *Manager) finishPing(key string, gen uint64, req request, n int, start t
 			m.removeLocked(key)
 		}
 		m.logLocked("warn", "ping failed: "+err.Error(), req, n, event.Stopped)
-	case usage.CacheCreationTokens > 0:
-		// The replay wrote to the cache, so the entry had expired or the
-		// replay differs from the original request. Further pings would pay
-		// for writes again.
+	case usage.CacheReadTokens <= 0 || usage.CacheCreationTokens > 0:
+		// Renewal requires a cache read with no writes. Even a partial
+		// write can indicate expiration or a changed prefix; stop to avoid
+		// paying for it repeatedly. No read also stops uncached replays.
 		if stillCurrent {
 			event.Stopped = stopCacheMiss
 			m.removeLocked(key)

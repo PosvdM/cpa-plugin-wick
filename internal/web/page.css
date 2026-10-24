@@ -229,9 +229,35 @@ select:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, v
 .totals { margin: -6px 0 12px; font-size: 13px; color: var(--text-secondary); }
 .hint.totals-notes { margin: -8px 0 12px; }
 .totals-notes:empty { display: none; }
-/* The comparison is a short table of three rows, kept narrow. */
-table.compare { width: auto; min-width: 360px; }
-table.compare th:first-child, table.compare td:first-child { padding-left: 0; padding-right: 32px; }
+/* Cache costs share one scale; amounts and breakdowns stay outside the bars. */
+.cost-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 22px; margin-bottom: 18px; }
+#cost-headline { font-size: clamp(20px, 2.5vw, 28px); font-weight: 650; letter-spacing: -0.025em; margin: 0; }
+.cost-success { color: var(--success-badge-text); }
+.cost-warning { color: var(--amber-text); }
+#cost-deltas { color: var(--text-secondary); font-size: 13px; margin: 0; }
+.cost-bars { display: grid; gap: 14px; }
+.cost-row { display: grid; grid-template-columns: 128px minmax(0, 1fr) 74px minmax(200px, 310px); align-items: center; gap: 12px; }
+.cost-label { font-size: 13px; color: var(--text-secondary); }
+.cost-amount { text-align: right; color: var(--text-primary); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 13px; }
+.cost-current .cost-label { font-weight: 650; color: var(--text-primary); }
+.cost-track { height: 10px; border-radius: 4px; background: var(--bg-tertiary); overflow: hidden; }
+.cost-fill { height: 100%; background: var(--text-quaternary); border-radius: inherit; }
+.cost-current .cost-fill { background: var(--primary-color); }
+.cost-detail { color: var(--text-tertiary); font-size: 12px; margin: 0; overflow-wrap: anywhere; }
+.cost-stats { font-size: 13px; color: var(--text-secondary); margin: 18px 0 14px; }
+.cost-stats:empty { display: none; }
+@media (max-width: 800px) {
+  .cost-row { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; }
+  .cost-label { grid-column: 1; grid-row: 1; }
+  .cost-amount { grid-column: 2; grid-row: 1; }
+  .cost-track { grid-column: 1 / -1; grid-row: 2; }
+  .cost-detail { grid-column: 1 / -1; grid-row: 3; }
+}
+form label.toggle-label { flex-direction: row; align-items: center; gap: 10px; width: fit-content; cursor: pointer; }
+.toggle-label input { appearance: none; width: 32px; height: 19px; border-radius: 999px; padding: 2px; margin: 0; background: var(--bg-tertiary); cursor: pointer; }
+.toggle-label input::before { content: ""; display: block; width: 13px; height: 13px; border-radius: 50%; background: var(--text-tertiary); }
+.toggle-label input:checked { background: var(--primary-color); border-color: var(--primary-color); }
+.toggle-label input:checked::before { transform: translateX(13px); background: var(--primary-contrast); }
 /* History rows open their rounds on click. */
 .conv-row { cursor: pointer; }
 .conv-row:focus-visible { outline: none; }

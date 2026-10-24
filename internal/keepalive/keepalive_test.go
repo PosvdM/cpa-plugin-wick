@@ -179,7 +179,7 @@ func intercept(id, session string, b []byte) pluginapi.RequestInterceptRequest {
 }
 
 func TestParseRequestBuildsReplay(t *testing.T) {
-	req, skip := parseRequest(intercept("r1", "sess", body("main", "1")), 0)
+	req, skip := parseRequest(intercept("r1", "sess", body("main", "1")), 0, false)
 	if skip != "" {
 		t.Fatalf("skip %q", skip)
 	}
@@ -213,7 +213,7 @@ func TestParseRequestSkips(t *testing.T) {
 		"1h":         {intercept("r", "s", []byte(strings.Replace(string(body("main", "1")), `"type":"ephemeral"`, `"type":"ephemeral","ttl":"1h"`, 1))), 0, skipTTL1h},
 	}
 	for name, tc := range cases {
-		if _, skip := parseRequest(tc.req, tc.minBody); skip != tc.want {
+		if _, skip := parseRequest(tc.req, tc.minBody, false); skip != tc.want {
 			t.Errorf("%s: skip %q, want %q", name, skip, tc.want)
 		}
 	}
@@ -351,16 +351,63 @@ func TestSubagentDurationZero(t *testing.T) {
 	}
 }
 
-func TestCacheMissStops(t *testing.T) {
-	m, clock, h, rec := newRecordingManager(testConfig())
-	h.cacheCreation = 5000
-	m.Observe(intercept("r1", "sess", body("main", "1")))
-	clock.Advance(time.Hour)
-	if h.pings() != 1 {
-		t.Fatalf("pings %d after a cache miss", h.pings())
-	}
-	if ev := rec.all(); len(ev) != 1 || ev[0].Stopped != stopCacheMiss {
-		t.Fatalf("events %+v", ev)
+func TestPingRequiresCacheReadWithoutWrites(t *testing.T) {
+	for _, client := range []string{"native", "other"} {
+		for _, usage := range []struct {
+			name        string
+			read, write int64
+		}{
+			{"no-cache", 0, 0},
+			{"write-only", 0, 5000},
+			{"read", 40000, 0},
+			{"read-and-write", 40000, 5000},
+		} {
+			t.Run(client+"/"+usage.name, func(t *testing.T) {
+				cfg := testConfig()
+				cfg.OtherClients = client == "other"
+				m, clock, h, rec := newRecordingManager(cfg)
+				h.cacheRead, h.cacheCreation = usage.read, usage.write
+				in := intercept("r1", "sess", body("main", "1"))
+				if client == "other" {
+					in = otherRequest(body("main", "1"))
+				}
+				m.Observe(in)
+				var c *conversation
+				for _, tracked := range m.convs {
+					c = tracked
+				}
+				before := c.lastRead
+				clock.Advance(260 * time.Second)
+				events := rec.all()
+				if h.pings() != 1 || len(events) != 1 {
+					t.Fatalf("pings %d events %+v", h.pings(), events)
+				}
+				if usage.read <= 0 || usage.write > 0 {
+					if events[0].Stopped != stopCacheMiss || !c.lastRead.Equal(before) || len(m.convs) != 0 || len(m.ended) != 0 {
+						t.Fatalf("miss renewed cache or retained conversation: lastRead=%s before=%s event=%+v", c.lastRead, before, events[0])
+					}
+					if logs := strings.Join(h.logs, "\n"); !strings.Contains(logs, "ping missed the cache") || !strings.Contains(logs, stopCacheMiss) {
+						t.Fatalf("missing cache-miss log: %s", logs)
+					}
+					clock.Advance(time.Hour)
+					if h.pings() != 1 {
+						t.Fatalf("pings %d after cache miss", h.pings())
+					}
+					m.Observe(in)
+					if len(rec.all()) != 1 {
+						t.Fatal("cache miss recorded a saved return")
+					}
+				} else {
+					if events[0].Stopped != "" || !c.lastRead.Equal(clock.Now()) || len(m.convs) != 1 {
+						t.Fatalf("cache read did not renew: lastRead=%s event=%+v", c.lastRead, events[0])
+					}
+					clock.Advance(260 * time.Second)
+					if h.pings() != 2 {
+						t.Fatalf("pings %d after cache read", h.pings())
+					}
+				}
+			})
+		}
 	}
 }
 

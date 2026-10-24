@@ -30,8 +30,15 @@ const maxScannedMessages = 20
 
 // clientEntrypoint returns the entrypoint in a Claude Code User-Agent,
 // "claude-cli/<version> (<user type>, <entrypoint>, ...)", such as cli,
-// claude-desktop or claude-vscode, or "" when there is none.
+// claude-desktop or claude-vscode. Other clients use the first product name.
 func clientEntrypoint(userAgent string) string {
+	if !strings.HasPrefix(userAgent, "claude-cli/") {
+		if parts := strings.Fields(userAgent); len(parts) > 0 {
+			product, _, _ := strings.Cut(parts[0], "/")
+			return product
+		}
+		return ""
+	}
 	_, rest, ok := strings.Cut(userAgent, "(")
 	if !ok {
 		return ""

@@ -169,6 +169,31 @@ func TestRoundsAndAmounts(t *testing.T) {
 	}
 }
 
+func TestRoundCacheReadAndWriteResult(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, stopped, want string
+		read, write         int64
+	}{
+		{"no-cache", "cache_miss", ResultMiss, 0, 0},
+		{"write-only", "cache_miss", ResultMiss, 0, 5000},
+		{"zero-usage-without-stop", "", ResultMiss, 0, 0},
+		{"read", "", ResultPending, 40000, 0},
+		{"read-and-write", "", ResultMiss, 40000, 5000},
+		{"write-only-without-stop", "", ResultMiss, 0, 5000},
+		{"recorded-miss", "cache_miss", ResultMiss, 40000, 5000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []keepalive.Event{{Time: now.Add(-time.Minute), Key: "a", Ping: 1, Returns: true, Stopped: tc.stopped,
+				Usage: &keepalive.Usage{CacheReadTokens: tc.read, CacheCreationTokens: tc.write, InputTokens: 3}}}
+			got := Group(events, now, nil)
+			if len(got) != 1 || len(got[0].Detail) != 1 || got[0].Detail[0].Result != tc.want {
+				t.Fatalf("groups %+v, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 func TestCompare(t *testing.T) {

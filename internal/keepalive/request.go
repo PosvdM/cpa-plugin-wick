@@ -14,14 +14,16 @@ import (
 
 // Skip reasons returned by parseRequest.
 const (
-	skipFormat    = "format"
-	skipNotStream = "not_stream"
-	skipNotNative = "not_native"
-	skipSmall     = "small"
-	skipNoSession = "no_session"
-	skipNoAuth    = "no_auth"
-	skipTTL1h     = "ttl_1h"
-	skipBadBody   = "bad_body"
+	skipFormat      = "format"
+	skipNotStream   = "not_stream"
+	skipNotNative   = "not_native"
+	skipSmall       = "small"
+	skipNoSession   = "no_session"
+	skipNoAuth      = "no_auth"
+	skipTTL1h       = "ttl_1h"
+	skipBadBody     = "bad_body"
+	skipNoCache     = "no_cache_control"
+	skipCachePolicy = "cache_policy"
 )
 
 const (
@@ -39,8 +41,10 @@ var ttl1hPattern = regexp.MustCompile(`"ttl"\s*:\s*"1h"`)
 
 // request is an intercepted request that Wick can replay.
 type request struct {
-	// Session is the Claude Code session ID.
+	// Session is an explicit client session identifier.
 	Session string
+	// Other marks a non-native client; false also covers saved native requests.
+	Other bool
 	// Agent is the subagent ID, empty for the main conversation.
 	Agent string
 	// Key identifies one conversation: the session, the agent ID, and the
@@ -48,7 +52,7 @@ type request struct {
 	Key   string
 	Model string
 	// Client, Cwd and Prompt describe the conversation on the management
-	// page: the Claude Code entrypoint, the working directory and the first
+	// page: the client entrypoint or product, the working directory and the first
 	// prompt.
 	Client    string
 	Cwd       string
@@ -57,23 +61,25 @@ type request struct {
 	RequestID string
 	TraceID   string
 	Headers   http.Header
-	// Body is a copy of the client body. The replay sends it unchanged, so
-	// upstream sees the same request as one canceled right after sending.
+	// Body is the outgoing client body, with 5m TTLs and CPA explicit cache
+	// mode for other clients. Interception, persistence and replay use these
+	// exact bytes.
 	Body []byte
 }
 
-// parseRequest checks whether req is a native Claude Code streaming request
+// parseRequest checks whether req is a Claude Messages streaming request
 // worth keeping alive and builds the replay. It returns a skip reason when
-// it is not. For skipTTL1h the returned request still carries Session and
-// Key, so the caller can drop that conversation.
-func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (request, string) {
+// it is not. For skipTTL1h the returned request still carries the conversation
+// scope and raw Key, so the caller can find and drop matching conversations.
+func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int, otherClients bool) (request, string) {
 	if req.SourceFormat != "claude" {
 		return request{}, skipFormat
 	}
 	if !req.Stream {
 		return request{}, skipNotStream
 	}
-	if strings.TrimSpace(req.Headers.Get("X-App")) != "cli" || !strings.HasPrefix(req.Headers.Get("User-Agent"), "claude-cli/") {
+	native := strings.TrimSpace(req.Headers.Get("X-App")) == "cli" && strings.HasPrefix(req.Headers.Get("User-Agent"), "claude-cli/")
+	if !native && !otherClients {
 		return request{}, skipNotNative
 	}
 	if len(req.Body) < minBodyBytes {
@@ -82,10 +88,7 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 	if !gjson.ValidBytes(req.Body) {
 		return request{}, skipBadBody
 	}
-	session := strings.TrimSpace(req.Headers.Get(sessionHeader))
-	if session == "" {
-		session = gjson.GetBytes(req.Body, "metadata.user_id").String()
-	}
+	session := requestSession(req)
 	if session == "" {
 		return request{}, skipNoSession
 	}
@@ -96,6 +99,7 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 	agent := strings.TrimSpace(req.Headers.Get(agentHeader))
 	out := request{
 		Session:   session,
+		Other:     !native,
 		Agent:     agent,
 		Key:       conversationKey(session, agent, model, req.Body),
 		Model:     model,
@@ -113,6 +117,16 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 		return request{}, skipNoAuth
 	}
 	out.Body = bytes.Clone(req.Body)
+	if out.Other {
+		var reason string
+		out.Body, reason = pinCacheTTL(out.Body)
+		if reason != "" {
+			return request{}, reason
+		}
+		// Hash the pinned tools and system so retries of the original body
+		// identify the same conversation.
+		out.Key = conversationKey(session, agent, model, out.Body)
+	}
 	out.Headers = req.Headers.Clone()
 	// The executor sets the account's credentials itself, so the client's
 	// credentials for CPA are not needed and are not kept or saved.
