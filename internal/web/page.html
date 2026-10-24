@@ -44,6 +44,29 @@
 
   <section class="card">
     <div class="card-head">
+      <h2 class="card-title" data-i18n="savings">花费对比</h2>
+      <div class="segmented" id="savings-range-buttons" role="group" aria-label="范围" data-i18n-aria-label="range">
+        <button type="button" class="seg" data-value="24h" aria-pressed="true" data-i18n="range_24h">24 小时</button>
+        <button type="button" class="seg" data-value="7d" aria-pressed="false" data-i18n="range_7d">7 天</button>
+        <button type="button" class="seg" data-value="1m" aria-pressed="false" data-i18n="range_1m">1 个月</button>
+        <button type="button" class="seg" data-value="all" aria-pressed="false" data-i18n="range_all">全部</button>
+      </div>
+    </div>
+    <p id="totals" class="totals"></p>
+    <p id="totals-notes" class="hint totals-notes"></p>
+    <div id="compare-wrap" class="table-wrap" hidden>
+      <table class="compare">
+        <thead>
+          <tr><th></th><th class="num" data-i18n="col_cache_cost" data-i18n-title="cache_cost_hint">缓存花费</th><th class="num" data-i18n="col_vs_none">比不挑灯</th></tr>
+        </thead>
+        <tbody id="compare"></tbody>
+      </table>
+    </div>
+    <p id="price-hint" class="hint"></p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
       <h2 class="card-title" data-i18n="events">挑灯记录</h2>
       <div class="segmented" id="range-buttons" role="group" aria-label="范围" data-i18n-aria-label="range">
         <button type="button" class="seg" data-value="24h" aria-pressed="true" data-i18n="range_24h">24 小时</button>
@@ -51,8 +74,6 @@
         <button type="button" class="seg" data-value="all" aria-pressed="false" data-i18n="range_all">全部</button>
       </div>
     </div>
-    <p id="totals" class="totals"></p>
-    <p id="totals-notes" class="hint totals-notes"></p>
     <div class="table-wrap">
       <table>
         <thead>
@@ -63,7 +84,6 @@
     </div>
     <p id="events-empty" class="empty" data-i18n="no_events" hidden>所选范围内没有挑灯记录。</p>
     <button id="events-more" class="btn btn-ghost btn-sm events-more" type="button" hidden></button>
-    <p id="price-hint" class="hint"></p>
     <p id="history-hint" class="hint"></p>
   </section>
 
@@ -76,12 +96,12 @@
         <div class="duration-row">
           <div class="segmented" id="duration-buttons" role="group" aria-label="默认挑灯时长" data-i18n-aria-label="duration">
             <button type="button" class="seg" data-value="0" aria-pressed="false" data-i18n="duration_off">关闭</button>
-            <button type="button" class="seg" data-value="2" aria-pressed="false" data-i18n="duration_15">15 分钟</button>
-            <button type="button" class="seg" data-value="6" aria-pressed="false" data-i18n="duration_30">30 分钟</button>
-            <button type="button" class="seg" data-value="12" aria-pressed="false" data-i18n="duration_60">1 小时</button>
+            <button type="button" class="seg" data-value="15" aria-pressed="false" data-i18n="duration_15">15 分钟</button>
+            <button type="button" class="seg" data-value="30" aria-pressed="false" data-i18n="duration_30">30 分钟</button>
+            <button type="button" class="seg" data-value="60" aria-pressed="false" data-i18n="duration_60">1 小时</button>
             <button type="button" class="seg" data-value="custom" aria-pressed="false" data-i18n="duration_custom">自定义</button>
           </div>
-          <label id="custom-pings" class="inline-input" hidden><span data-i18n="max_pings">最多挑灯</span><input name="max_pings" type="number" min="0" max="1000" step="1"><span data-i18n="times">次</span></label>
+          <label id="custom-minutes" class="inline-input" hidden><input name="duration_minutes" type="number" min="0" max="1440" step="1"><span data-i18n="minutes_unit">分钟</span></label>
         </div>
         <p id="duration-hint" class="hint"></p>
       </div>
@@ -90,12 +110,12 @@
         <div class="duration-row">
           <div class="segmented" id="subagent-buttons" role="group" aria-label="子代理挑灯时长" data-i18n-aria-label="subagent_duration">
             <button type="button" class="seg" data-value="0" aria-pressed="false" data-i18n="duration_off">关闭</button>
-            <button type="button" class="seg" data-value="2" aria-pressed="false" data-i18n="duration_15">15 分钟</button>
-            <button type="button" class="seg" data-value="6" aria-pressed="false" data-i18n="duration_30">30 分钟</button>
-            <button type="button" class="seg" data-value="12" aria-pressed="false" data-i18n="duration_60">1 小时</button>
+            <button type="button" class="seg" data-value="15" aria-pressed="false" data-i18n="duration_15">15 分钟</button>
+            <button type="button" class="seg" data-value="30" aria-pressed="false" data-i18n="duration_30">30 分钟</button>
+            <button type="button" class="seg" data-value="60" aria-pressed="false" data-i18n="duration_60">1 小时</button>
             <button type="button" class="seg" data-value="custom" aria-pressed="false" data-i18n="duration_custom">自定义</button>
           </div>
-          <label id="custom-subagent-pings" class="inline-input" hidden><span data-i18n="max_pings">最多挑灯</span><input name="subagent_max_pings" type="number" min="0" max="1000" step="1"><span data-i18n="times">次</span></label>
+          <label id="custom-subagent-minutes" class="inline-input" hidden><input name="subagent_duration_minutes" type="number" min="0" max="1440" step="1"><span data-i18n="minutes_unit">分钟</span></label>
         </div>
         <p id="subagent-hint" class="hint"></p>
       </div>

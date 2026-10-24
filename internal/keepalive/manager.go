@@ -29,15 +29,12 @@ const (
 	pingTimeout = 60 * time.Second
 	// cacheTTL is how long a prompt cache entry lives after it was last read.
 	cacheTTL = 300 * time.Second
-	// MaxDurationHours bounds the duration set for one conversation.
-	MaxDurationHours = 24
 	// maxEventPromptRunes bounds the first prompt stored with each ping.
 	maxEventPromptRunes = 80
 )
 
 // Stop reasons, also reported in the status API.
 const (
-	stopMaxPings   = "max_pings"
 	stopUntil      = "until"
 	stopError      = "error"
 	stopCacheMiss  = "cache_miss"
@@ -115,6 +112,9 @@ type Manager struct {
 	// may still be warm, until it expires, so that a request coming back in
 	// that time is recorded as a return.
 	ended map[string]round
+	// seen and awaiting record the usage of requests; see usage.go.
+	seen     map[string]lastSeen
+	awaiting map[string]*awaitingUsage
 }
 
 // round is the state of a conversation's round of pings that a return is
@@ -139,15 +139,13 @@ type conversation struct {
 	gen       uint64
 	timer     Timer
 	lastUsage *Usage
-	// until, when set, replaces max_pings: pings continue until the cache
-	// lasts past this time. hours is the duration that was set. Both are
-	// cleared by the next request.
-	until time.Time
-	hours float64
+	// minutes, when set on the management page, replaces the configured
+	// duration until the next request.
+	minutes int
 }
 
-// Event is the result of one ping, or with Kind KindReturn, the request
-// that ended a round of pings.
+// Event is the result of one ping; with Kind KindReturn, the request that
+// ended a round of pings; with Kind KindRequest, the usage of a request.
 type Event struct {
 	Time    time.Time `json:"time"`
 	Session string    `json:"session"`
@@ -188,6 +186,8 @@ func New(opts Options) *Manager {
 		convs:    make(map[string]*conversation),
 		streams:  make(map[string]struct{}),
 		ended:    make(map[string]round),
+		seen:     make(map[string]lastSeen),
+		awaiting: make(map[string]*awaitingUsage),
 	}
 	if m.clock == nil {
 		m.clock = realClock{}
@@ -202,7 +202,8 @@ func New(opts Options) *Manager {
 }
 
 // Configure applies cfg to new schedules and resumes a stopped manager.
-// Conversations that have reached their new limit are snuffed out.
+// Conversations whose cache already lasts their new duration are snuffed
+// out.
 func (m *Manager) Configure(cfg config.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -211,29 +212,38 @@ func (m *Manager) Configure(cfg config.Config) {
 	for key, c := range m.convs {
 		if m.doneLocked(c) {
 			m.retireLocked(key, c)
-			m.logLocked("info", "limit lowered, keep-alive stopped", c.req, c.pings, stopMaxPings)
+			m.logLocked("info", "duration shortened, keep-alive stopped", c.req, c.pings, stopUntil)
 		}
 	}
 }
 
-// doneLocked reports whether c has used up its pings: its limit is 0, or it
-// has no time set and has reached its limit.
+// doneLocked reports whether c needs no more pings: Wick is off for it, or
+// its cache already lasts until the end of its duration.
 func (m *Manager) doneLocked(c *conversation) bool {
-	limit := m.limitLocked(c.req)
-	return limit == 0 || (c.until.IsZero() && c.pings >= limit)
+	return m.defaultMinutesLocked(c.req) == 0 || !m.untilLocked(c).After(c.lastRead.Add(cacheTTL))
 }
 
-// limitLocked returns the pings per idle period of req's conversation:
-// subagent_max_pings for subagents, max_pings otherwise. max_pings 0 turns
-// Wick off, subagents included.
-func (m *Manager) limitLocked(req request) int {
-	if m.cfg.MaxPings == 0 {
+// defaultMinutesLocked returns the configured duration of req's
+// conversation: subagent_duration_minutes for subagents, duration_minutes
+// otherwise. duration_minutes 0 turns Wick off, subagents included.
+func (m *Manager) defaultMinutesLocked(req request) int {
+	if m.cfg.DurationMinutes == 0 {
 		return 0
 	}
 	if req.Agent != "" {
-		return m.cfg.SubagentMaxPings
+		return m.cfg.SubagentDurationMinutes
 	}
-	return m.cfg.MaxPings
+	return m.cfg.DurationMinutes
+}
+
+// untilLocked returns the end of c's duration: the duration set on the
+// management page, or the configured one, after its last request.
+func (m *Manager) untilLocked(c *conversation) time.Time {
+	minutes := c.minutes
+	if minutes == 0 {
+		minutes = m.defaultMinutesLocked(c.req)
+	}
+	return c.lastRequest.Add(time.Duration(minutes) * time.Minute)
 }
 
 // SetStore saves the conversations under dir from now on. The first call
@@ -276,6 +286,8 @@ func (m *Manager) Stop() {
 		m.removeLocked(key)
 	}
 	clear(m.ended)
+	clear(m.seen)
+	clear(m.awaiting)
 	streams := make([]string, 0, len(m.streams))
 	for id := range m.streams {
 		streams = append(streams, id)
@@ -330,13 +342,14 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) {
 // observeLocked tracks req and returns the event to record when req ends a
 // round of pings.
 func (m *Manager) observeLocked(req request, now time.Time) (Event, bool) {
-	if m.stopped || m.limitLocked(req) == 0 {
+	if m.stopped || m.defaultMinutesLocked(req) == 0 {
 		return Event{}, false
 	}
 	m.pruneEndedLocked(now)
 	var ret Event
 	returned := false
 	c, ok := m.convs[req.Key]
+	m.awaitLocked(req, now, c)
 	if r, found := m.ended[req.Key]; found && !ok {
 		ret, returned = m.returnLocked(req, now, r), true
 	} else if ok && c.pings > 0 {
@@ -358,7 +371,7 @@ func (m *Manager) observeLocked(req request, now time.Time) (Event, bool) {
 		if c.timer != nil {
 			c.timer.Stop()
 		}
-		c.until, c.hours = time.Time{}, 0
+		c.minutes = 0
 	} else {
 		m.replaceLocked(req)
 		if len(m.convs) >= maxConversations {
@@ -373,6 +386,11 @@ func (m *Manager) observeLocked(req request, now time.Time) (Event, bool) {
 	c.pings = 0
 	m.gen++
 	c.gen = m.gen
+	// A duration of up to 5 minutes needs no pings.
+	if m.doneLocked(c) {
+		m.removeLocked(req.Key)
+		return ret, returned
+	}
 	m.scheduleLocked(req.Key, c, now)
 	return ret, returned
 }
@@ -498,36 +516,51 @@ func (m *Manager) Complete(done pluginapi.RequestCompletion) {
 	}
 }
 
-// SetDuration keeps the conversation whose short key is key alive for hours
-// from now, in place of its limit of pings, until the conversation's next
-// request. hours 0 returns it to the limit. It reports whether a
-// conversation was found.
-func (m *Manager) SetDuration(key string, hours float64) bool {
-	if !(hours >= 0 && hours <= MaxDurationHours) {
-		return false
+// Errors of SetDuration.
+var (
+	ErrNotFound = errors.New("conversation not found")
+	// ErrPassed: the cache already lasts past the duration, so it would
+	// not change anything.
+	ErrPassed = errors.New("the duration has already passed")
+)
+
+// SetDuration keeps the conversation whose short key is key lit until
+// minutes after its last request, in place of the configured duration,
+// until the conversation's next request. minutes 0 returns it to the
+// configured duration. A duration the cache already lasts would stop the
+// pings at once and returns ErrPassed, so that the menu cannot snuff out a
+// conversation.
+func (m *Manager) SetDuration(key string, minutes int) error {
+	if minutes < 0 || minutes > config.MaxDurationMinutes {
+		return fmt.Errorf("minutes must be between 0 and %d", config.MaxDurationMinutes)
 	}
-	now := m.clock.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	found := false
+	var matched []*conversation
 	for full, c := range m.convs {
 		if short(full) != key {
 			continue
 		}
-		found = true
-		if hours > 0 {
-			c.until, c.hours = now.Add(time.Duration(hours*float64(time.Hour))), hours
-			m.logLocked("info", fmt.Sprintf("kept lit for %g h from the management page", hours), c.req, c.pings, "")
-		} else {
-			c.until, c.hours = time.Time{}, 0
-			if c.pings >= m.limitLocked(c.req) {
-				m.retireLocked(full, c)
-				m.logLocked("info", "duration reset from the management page", c.req, c.pings, stopMaxPings)
-			}
+		set := *c
+		set.minutes = minutes
+		if m.doneLocked(&set) {
+			return ErrPassed
 		}
-		m.persistLocked()
+		matched = append(matched, c)
 	}
-	return found
+	if len(matched) == 0 {
+		return ErrNotFound
+	}
+	for _, c := range matched {
+		c.minutes = minutes
+		if minutes > 0 {
+			m.logLocked("info", fmt.Sprintf("kept lit for %d min from the management page", minutes), c.req, c.pings, "")
+		} else {
+			m.logLocked("info", "duration reset from the management page", c.req, c.pings, "")
+		}
+	}
+	m.persistLocked()
+	return nil
 }
 
 // StopConversation stops the keep-alive of the conversation whose short key,
@@ -599,7 +632,7 @@ func (m *Manager) evictOldestLocked() {
 	var oldestAt time.Time
 	oldestSet := true
 	for key, c := range m.convs {
-		set := !c.until.IsZero()
+		set := c.minutes > 0
 		if oldest == "" || (oldestSet && !set) || (oldestSet == set && c.lastRequest.Before(oldestAt)) {
 			oldest, oldestAt, oldestSet = key, c.lastRequest, set
 		}
@@ -690,14 +723,10 @@ func (m *Manager) finishPing(key string, gen uint64, req request, n int, start t
 		if stillCurrent {
 			current.lastUsage = usage
 			current.lastRead = start
-			switch {
-			case !current.until.IsZero() && !start.Add(cacheTTL).Before(current.until):
+			if m.doneLocked(current) {
 				event.Stopped = stopUntil
 				m.retireLocked(key, current)
-			case current.until.IsZero() && n >= m.limitLocked(req):
-				event.Stopped = stopMaxPings
-				m.retireLocked(key, current)
-			default:
+			} else {
 				m.scheduleLocked(key, current, start)
 			}
 		}
@@ -809,19 +838,20 @@ type ConversationStatus struct {
 	AuthID      string    `json:"auth_id"`
 	FirstSeen   time.Time `json:"first_seen"`
 	LastRequest time.Time `json:"last_request"`
-	NextPing    time.Time `json:"next_ping"`
-	// Pings counts the pings since the last request, up to MaxPings, the
-	// limit of the conversation. TotalPings is filled in by the plugin from
-	// the history.
+	// LastRead is when the cache was last read; it lasts 300 seconds more.
+	LastRead time.Time `json:"last_read"`
+	NextPing time.Time `json:"next_ping"`
+	// Pings counts the pings since the last request. TotalPings is filled
+	// in by the plugin from the history.
 	Pings      int    `json:"pings"`
-	MaxPings   int    `json:"max_pings"`
 	TotalPings int    `json:"total_pings"`
 	BodyBytes  int    `json:"body_bytes"`
 	LastUsage  *Usage `json:"last_usage,omitempty"`
-	// Until and Hours are set when the management page set a duration for
-	// the conversation.
-	Until *time.Time `json:"until,omitempty"`
-	Hours float64    `json:"hours,omitempty"`
+	// Until is the end of the conversation's duration: Minutes, set on the
+	// management page, or DefaultMinutes after the last request.
+	Until          time.Time `json:"until"`
+	Minutes        int       `json:"minutes,omitempty"`
+	DefaultMinutes int       `json:"default_minutes"`
 }
 
 // Status is the response of the status API.
@@ -844,25 +874,24 @@ func (m *Manager) Status() Status {
 	}
 	for _, c := range m.convs {
 		cs := ConversationStatus{
-			Session:     c.req.Session,
-			Key:         short(c.req.Key),
-			Model:       c.req.Model,
-			Agent:       c.req.Agent != "",
-			Client:      c.req.Client,
-			Cwd:         c.req.Cwd,
-			Prompt:      c.req.Prompt,
-			AuthID:      c.req.AuthID,
-			FirstSeen:   c.firstSeen,
-			LastRequest: c.lastRequest,
-			NextPing:    c.nextPing,
-			Pings:       c.pings,
-			MaxPings:    m.limitLocked(c.req),
-			BodyBytes:   len(c.req.Body),
-			LastUsage:   c.lastUsage,
-		}
-		if !c.until.IsZero() {
-			until := c.until
-			cs.Until, cs.Hours = &until, c.hours
+			Session:        c.req.Session,
+			Key:            short(c.req.Key),
+			Model:          c.req.Model,
+			Agent:          c.req.Agent != "",
+			Client:         c.req.Client,
+			Cwd:            c.req.Cwd,
+			Prompt:         c.req.Prompt,
+			AuthID:         c.req.AuthID,
+			FirstSeen:      c.firstSeen,
+			LastRequest:    c.lastRequest,
+			LastRead:       c.lastRead,
+			NextPing:       c.nextPing,
+			Pings:          c.pings,
+			Until:          m.untilLocked(c),
+			Minutes:        c.minutes,
+			DefaultMinutes: m.defaultMinutesLocked(c.req),
+			BodyBytes:      len(c.req.Body),
+			LastUsage:      c.lastUsage,
 		}
 		status.Conversations = append(status.Conversations, cs)
 	}

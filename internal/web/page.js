@@ -4,8 +4,8 @@
   var API = "/v0/management/wick";
   var CONFIG_API = "/v0/management/plugins/wick/config";
   var KEY_STORE = "wick-management-key";
-  // The duration presets and the max_pings each one saves.
-  var PRESETS = ["0", "2", "6", "12"];
+  // The duration presets of the settings, in minutes.
+  var PRESETS = ["0", "15", "30", "60"];
   // The prompt cache keeps an entry for 300 seconds after the last read.
   var CACHE_TTL = 300;
   var EVENTS_SHOWN = 20;
@@ -19,6 +19,12 @@
   var historyRange = "24h";
   var historyLimit = EVENTS_SHOWN;
   var historyData = null;
+  var savingsRange = "24h";
+  var savingsData = null;
+  // When the savings were last loaded; they are reloaded once a minute,
+  // since requests add to the comparison without a new event.
+  var savingsLoaded = 0;
+  var SAVINGS_REFRESH = 60000;
   // last_event of the status the history was loaded for.
   var lastEventSeen = null;
   // Reloads the history when its earliest pending round gets a result.
@@ -102,17 +108,17 @@
       save_hint: "修改后自动保存到 CPA 的 config.yaml，插件几秒内应用。",
       duration: "默认挑灯时长",
       duration_off: "关闭", duration_15: "15 分钟", duration_30: "30 分钟", duration_60: "1 小时", duration_custom: "自定义",
-      max_pings: "最多挑灯", times: "次",
-      duration_hint: "对话空闲后每隔 {0}到 {1}挑灯一次，最多 {2} 次，缓存约保持 {3} 分钟。单个对话可在下方另设时长。",
+      minutes_unit: "分钟",
+      duration_hint: "对话空闲后每隔 {0}到 {1}挑灯一次，缓存保持到空闲 {2}。单个对话可在“正在挑灯的对话”中另设时长。",
       duration_hint_off: "挑灯已关闭，对话空闲 5 分钟后缓存过期。",
       subagent_duration: "子代理挑灯时长",
-      subagent_hint: "子代理空闲后最多挑灯 {0} 次，缓存约保持 {1} 分钟。主对话收到下一个请求时，子代理随之熄灭。",
+      subagent_hint: "子代理的缓存保持到空闲 {0}。主对话收到下一个请求时，子代理随之熄灭。",
       subagent_hint_off: "子代理不挑灯。", subagent_hint_wick_off: "默认挑灯时长为“关闭”时，子代理也不挑灯。",
       advanced: "高级设置", advanced_scope: "对所有对话生效",
       interval_min: "最短间隔（秒）", interval_max: "最长间隔（秒）", min_body_kb: "最小请求体（KiB）", history_retention_days: "记录保留（天）",
       advanced_hint: "每次挑灯的时刻在最短和最长间隔之间随机选取，最长间隔不超过 299 秒。请求体小于最小请求体的请求不挑灯，如生成标题等辅助请求。",
       interval_invalid: "间隔须满足 1 ≤ 最短间隔 ≤ 最长间隔 ≤ 299",
-      number_invalid: "请填写不小于 0 的整数",
+      number_invalid: "请填写不小于 0 的整数", minutes_invalid: "请填写 0，或 6 到 1440 之间的分钟数",
       retention_invalid: "记录保留天数须在 1 到 3650 之间",
       saved: "已保存", save_failed: "保存失败：{0}", load_failed: "加载失败：{0}",
       conversations: "正在挑灯的对话",
@@ -124,19 +130,22 @@
       context_pending: "首次挑灯后显示",
       pings_total: "累计 {0}", pings_total_hint: "共挑灯 {0} 次，本轮 {1} 次。对话收到新请求后开始新的一轮。",
       pinging: "挑灯中",
-      duration_default: "默认", duration_hours: "{0} 小时", duration_custom_option: "自定义…",
-      duration_until: "到 {0}", duration_input: "小时数",
+      duration_default: "{0}（默认）", duration_hours: "{0} 小时",
+      duration_custom_option: "自定义…", duration_until: "到 {0}", duration_input: "分钟数",
       duration_set: "已设置，挑灯到 {0}", duration_reset: "已恢复默认时长", duration_failed: "设置失败：{0}",
-      duration_invalid: "请填写 0 到 24 之间的小时数",
+      duration_invalid: "请填写 1 到 1440 之间的分钟数", duration_too_short: "时长须超过 {0} 分钟", duration_passed: "这个时长已经过了",
       stop: "熄灭", stopped_one: "已熄灭", stop_failed: "熄灭失败：{0}",
-      events: "挑灯记录", range: "范围", range_24h: "24 小时", range_7d: "7 天", range_all: "全部",
-      range_label_24h: "近 24 小时", range_label_7d: "近 7 天", range_label_all: "保留的 {0} 天内",
+      events: "挑灯记录", range: "范围", range_24h: "24 小时", range_7d: "7 天", range_1m: "1 个月", range_all: "全部",
+      range_label_24h: "近 24 小时", range_label_7d: "近 7 天", range_label_1m: "近 1 个月", range_label_all: "保留的 {0} 天内",
+      savings: "花费对比",
       totals_priced: "{0}挑灯 {1}（{2}），花费 {3}；{4}等到你回来，省下 {5}；{6}。",
+      totals_compared: "{0}挑灯 {1}（{2}），花费 {3}；{4}等到你回来，省下 {5}。",
       totals_plain: "{0}挑灯 {1}（{2}），{3}等到你回来。",
       net_saved: "净省 {0}", net_cost: "净耗 {0}",
-      totals_failed: "其中 {0}失败。", totals_pending: "{0}仍在挑灯，未计入净值。",
-      totals_unknown: "{0}是 v0.5.0 之前的记录，没有记下你是否回来，只显示轮次，不计入金额。",
+      totals_failed: "其中 {0}失败。",
       totals_unpriced: "{0}的模型在定价页上找不到价格，不计入金额。",
+      col_cache_cost: "缓存花费", cache_cost_hint: "缓存读取和写入的花费；“挑灯”一行另含挑灯本身的花费。", col_vs_none: "比不挑灯",
+      plan_none: "不挑灯", plan_wick: "挑灯", plan_hour: "1 小时缓存", vs_less: "省 {0}", vs_more: "多 {0}",
       n_pings: "{0} 次", n_ping: "{0} 次", n_rounds: "{0} 轮", n_round: "{0} 轮",
       col_time: "最后挑灯", col_rounds: "挑灯", col_cost: "花费", col_saved: "省下", col_result: "结果",
       col_round_time: "时间", col_round_pings: "本轮次数", col_read: "缓存读取",
@@ -148,7 +157,7 @@
       price_stale: "最近一次更新价格失败：{0}",
       price_none: "尚未取得 API 价格，暂不显示金额。", price_error: "获取失败：{0}",
       result_saved: "省下", result_saved_amount: "省下 {0}", result_wasted: "白挑", result_pending: "挑灯中",
-      result_miss: "未命中", result_failed: "失败", result_unknown: "未记录", result_count: "{0} {1}",
+      result_miss: "未命中", result_failed: "失败", result_count: "{0} {1}",
       round_back: "空闲 {0} 后回来",
       events_more: "再显示 {0} 个对话",
       seconds: "{0} 秒", minutes_seconds: "{0} 分 {1} 秒", minutes: "{0} 分钟", hours_minutes: "{0} 小时 {1} 分"
@@ -164,17 +173,17 @@
       save_hint: "Changes are saved to CPA's config.yaml and applied by the plugin within a few seconds.",
       duration: "Default time kept lit",
       duration_off: "Off", duration_15: "15 min", duration_30: "30 min", duration_60: "1 hour", duration_custom: "Custom",
-      max_pings: "Up to", times: "pings",
-      duration_hint: "While a conversation is idle, Wick pings every {0} to {1}, up to {2} times, keeping the cache for about {3} minutes. A conversation can be kept lit longer below.",
+      minutes_unit: "min",
+      duration_hint: "While a conversation is idle, Wick pings it every {0} to {1}, keeping the cache until it has been idle for {2}. Each conversation can be given its own time under Conversations kept lit.",
       duration_hint_off: "Wick is off. The cache expires after 5 idle minutes.",
       subagent_duration: "Time kept lit for subagents",
-      subagent_hint: "While a subagent is idle, Wick pings it up to {0} times, keeping its cache for about {1} minutes. Subagents are snuffed out when the main conversation sends its next request.",
+      subagent_hint: "A subagent's cache is kept until it has been idle for {0}. Subagents are snuffed out when the main conversation sends its next request.",
       subagent_hint_off: "Subagents are not kept lit.", subagent_hint_wick_off: "With the default time set to Off, subagents are not kept lit either.",
       advanced: "Advanced", advanced_scope: "Applies to every conversation",
       interval_min: "Shortest interval (s)", interval_max: "Longest interval (s)", min_body_kb: "Minimum body (KiB)", history_retention_days: "Keep history (days)",
       advanced_hint: "Each ping is sent at a random time between the shortest and longest interval; the longest is at most 299 seconds. Requests with a smaller body than the minimum, such as title generation, are not kept lit.",
       interval_invalid: "Intervals must satisfy 1 ≤ shortest ≤ longest ≤ 299",
-      number_invalid: "Enter a whole number of at least 0",
+      number_invalid: "Enter a whole number of at least 0", minutes_invalid: "Enter 0, or 6 to 1440 minutes",
       retention_invalid: "Keep history for 1 to 3650 days",
       saved: "Saved", save_failed: "Save failed: {0}", load_failed: "Load failed: {0}",
       conversations: "Conversations kept lit",
@@ -186,19 +195,22 @@
       context_pending: "Shown after the first ping",
       pings_total: "{0} in all", pings_total_hint: "{0} pings in all, {1} in this round. A new request starts a new round.",
       pinging: "Pinging",
-      duration_default: "Default", duration_hours: "{0} h", duration_custom_option: "Custom…",
-      duration_until: "Until {0}", duration_input: "Hours",
+      duration_default: "{0} (default)", duration_hours: "{0} h",
+      duration_custom_option: "Custom…", duration_until: "Until {0}", duration_input: "Minutes",
       duration_set: "Kept lit until {0}", duration_reset: "Back to the default time", duration_failed: "Could not set: {0}",
-      duration_invalid: "Enter a number of hours from 0 to 24",
+      duration_invalid: "Enter 1 to 1440 minutes", duration_too_short: "Enter more than {0} minutes", duration_passed: "That time has already passed",
       stop: "Snuff out", stopped_one: "Snuffed out", stop_failed: "Could not snuff out: {0}",
-      events: "Ping history", range: "Range", range_24h: "24 hours", range_7d: "7 days", range_all: "All",
-      range_label_24h: "Last 24 hours", range_label_7d: "Last 7 days", range_label_all: "All {0} days kept",
+      events: "Ping history", range: "Range", range_24h: "24 hours", range_7d: "7 days", range_1m: "1 month", range_all: "All",
+      range_label_24h: "Last 24 hours", range_label_7d: "Last 7 days", range_label_1m: "Last month", range_label_all: "All {0} days kept",
+      savings: "Cost comparison",
       totals_priced: "{0}: {1} in {2}, costing {3}; you came back in time for {4}, saving {5}; {6}.",
+      totals_compared: "{0}: {1} in {2}, costing {3}; you came back in time for {4}, saving {5}.",
       totals_plain: "{0}: {1} in {2}; you came back in time for {3}.",
       net_saved: "net saving {0}", net_cost: "net cost {0}",
-      totals_failed: "{0} failed.", totals_pending: "{0} still lit, not counted in the net.",
-      totals_unknown: "{0} recorded before v0.5.0, which did not record whether you came back, are shown without amounts.",
+      totals_failed: "{0} failed.",
       totals_unpriced: "{0} with a model missing from the pricing page are shown without amounts.",
+      col_cache_cost: "Cache cost", cache_cost_hint: "Cache reads and writes; the Wick row also includes the pings.", col_vs_none: "Versus no pings",
+      plan_none: "No pings", plan_wick: "Wick", plan_hour: "1-hour cache", vs_less: "{0} less", vs_more: "{0} more",
       n_pings: "{0} pings", n_ping: "{0} ping", n_rounds: "{0} rounds", n_round: "{0} round",
       col_time: "Last ping", col_rounds: "Pings", col_cost: "Cost", col_saved: "Saved", col_result: "Result",
       col_round_time: "Time", col_round_pings: "Pings", col_read: "Cache read",
@@ -210,7 +222,7 @@
       price_stale: "The last price update failed: {0}",
       price_none: "API prices are not available yet, so no amounts are shown.", price_error: "Fetching failed: {0}",
       result_saved: "Saved", result_saved_amount: "Saved {0}", result_wasted: "Wasted", result_pending: "Lit",
-      result_miss: "Miss", result_failed: "Failed", result_unknown: "Not recorded", result_count: "{0} {1}",
+      result_miss: "Miss", result_failed: "Failed", result_count: "{0} {1}",
       round_back: "back after {0} idle",
       events_more: "Show {0} more conversations",
       seconds: "{0} s", minutes_seconds: "{0} min {1} s", minutes: "{0} min", hours_minutes: "{0} h {1} min"
@@ -267,6 +279,7 @@
       renderStatus();
       renderDurationHint();
     }
+    renderSavings();
     renderEvents();
   }
 
@@ -407,7 +420,7 @@
     var state = $("state");
     clear(state);
     if (!status.enabled) state.appendChild(badge("muted", translate("state_disabled")));
-    else if (!status.config || !status.config.max_pings) state.appendChild(badge("muted", translate("state_off")));
+    else if (!status.config || !status.config.duration_minutes) state.appendChild(badge("muted", translate("state_off")));
     else state.appendChild(badge("success", translate("state_running")));
     $("meta").textContent = "v" + status.version;
   }
@@ -466,7 +479,8 @@
     ]);
   }
 
-  var DURATION_PRESETS = [1, 2, 4, 8];
+  // The durations offered for one conversation, in minutes.
+  var DURATION_PRESETS = [15, 30, 60, 120, 240, 480];
   // A refresh leaves the conversation table alone for this long after the
   // user last touched a duration menu, so that an open menu is not closed.
   var MENU_HOLD = 15000;
@@ -474,17 +488,42 @@
   // The server returns at most this many conversations of the history.
   var HISTORY_MAX = 5000;
 
-  // The duration of one conversation: a menu of presets, with a number field
-  // for other values.
+  function fmtDuration(minutes) {
+    if (minutes < 60) return translate("minutes", minutes);
+    if (minutes % 60 === 0) return translate("duration_hours", minutes / 60);
+    return translate("hours_minutes", Math.floor(minutes / 60), minutes % 60);
+  }
+
+  // The minutes after its last request that the cache of c already lasts.
+  // A duration up to this long would not change anything.
+  function minutesCovered(c) {
+    var last = parseTime(c.last_request), read = parseTime(c.last_read);
+    if (!last || !read) return CACHE_TTL / 60;
+    return (read.getTime() - last.getTime()) / 60000 + CACHE_TTL / 60;
+  }
+
+  // The duration of one conversation: a menu of presets in order of length,
+  // the default among them, with a number field for other values. Durations
+  // the cache already lasts are disabled, since choosing one would snuff
+  // out the conversation.
   function durationCell(c) {
     var cell = el("td", { class: "duration" });
     var select = el("select", { class: "duration-select", "aria-label": translate("col_duration") });
-    function option(value, text) { select.appendChild(el("option", { value: value, text: text })); }
-    option("0", translate("duration_default"));
-    DURATION_PRESETS.forEach(function (h) { option(String(h), translate("duration_hours", h)); });
-    if (c.hours && DURATION_PRESETS.indexOf(c.hours) < 0) option(String(c.hours), translate("duration_hours", c.hours));
-    option("custom", translate("duration_custom_option"));
-    var initial = String(c.hours || 0);
+    var def = c.default_minutes, covered = minutesCovered(c);
+    var initial = c.minutes && c.minutes !== def ? String(c.minutes) : "0";
+    var choices = DURATION_PRESETS.slice();
+    if (c.minutes && choices.indexOf(c.minutes) < 0) choices.push(c.minutes);
+    if (choices.indexOf(def) < 0) choices.push(def);
+    choices.sort(function (a, b) { return a - b; });
+    choices.forEach(function (m) {
+      var value = m === def ? "0" : String(m);
+      select.appendChild(el("option", {
+        value: value,
+        text: m === def ? translate("duration_default", fmtDuration(m)) : fmtDuration(m),
+        disabled: m <= covered && value !== initial
+      }));
+    });
+    select.appendChild(el("option", { value: "custom", text: translate("duration_custom_option") }));
     select.value = initial;
     // Arrow keys on a closed menu change the value one step at a time, so a
     // change made with the keyboard is committed on Enter or when the menu
@@ -519,22 +558,23 @@
 
   function showDurationInput(cell, c) {
     clear(cell);
-    var input = el("input", { type: "number", min: "0", max: "24", step: "0.5", class: "duration-input", placeholder: translate("duration_input"), "aria-label": translate("duration_input") });
-    if (c.hours) input.value = c.hours;
+    var input = el("input", { type: "number", min: "1", max: "1440", step: "1", class: "duration-input", placeholder: translate("duration_input"), "aria-label": translate("duration_input") });
+    if (c.minutes) input.value = c.minutes;
     var done = false;
     function finish(commit) {
       if (done) return;
       done = true;
       var text = input.value.trim();
       if (!commit || text === "") { input.blur(); renderConversations(); return; }
-      var hours = Number(text);
-      if (!isFinite(hours) || hours < 0 || hours > 24) {
-        toast(translate("duration_invalid"));
+      var minutes = Number(text);
+      var covered = minutesCovered(c);
+      if (!/^\d+$/.test(text) || minutes < 1 || minutes > 1440 || minutes <= covered) {
+        toast(minutes <= covered && minutes >= 1 ? translate("duration_too_short", Math.floor(covered)) : translate("duration_invalid"));
         input.blur();
         renderConversations();
         return;
       }
-      setDuration(input, c.key, hours);
+      setDuration(input, c.key, minutes);
     }
     input.addEventListener("keydown", function (e) {
       if (e.key === "Enter") { e.preventDefault(); finish(true); }
@@ -545,18 +585,19 @@
     input.focus();
   }
 
-  function setDuration(control, convKey, hours) {
+  function setDuration(control, convKey, minutes) {
     control.disabled = true;
-    api("POST", API + "/duration", { key: convKey, hours: hours }).then(function (data) {
+    api("POST", API + "/duration", { key: convKey, minutes: minutes }).then(function (data) {
       control.blur();
       showStatus(data);
       var c = (data.conversations || []).filter(function (x) { return x.key === convKey; })[0];
       var until = c ? parseTime(c.until) : null;
-      toast(until ? translate("duration_set", fmtClock(until)) : translate("duration_reset"));
+      toast(minutes && until ? translate("duration_set", fmtClock(until)) : translate("duration_reset"));
     }).catch(function (err) {
       control.disabled = false;
       control.blur();
-      if (err.message !== "unauthorized") toast(translate("duration_failed", err.message));
+      if (err.message === "the duration has already passed") toast(translate("duration_passed"));
+      else if (err.message !== "unauthorized") toast(translate("duration_failed", err.message));
       loadStatus().catch(function () {});
     });
   }
@@ -589,7 +630,7 @@
           ? el("td", { class: "num", text: fmtNum(contextTokens(usage)) })
           : el("td", { class: "num muted", title: translate("context_pending"), text: "—" }),
         el("td", { class: "num", title: translate("pings_total_hint", c.total_pings || 0, c.pings) }, [
-          el("div", { text: c.until ? String(c.pings) : c.pings + " / " + c.max_pings }),
+          el("div", { text: String(c.pings) }),
           el("div", { class: "cell-note", text: translate("pings_total", c.total_pings || 0) })
         ]),
         el("td", { class: "mono", "data-since": last ? last.getTime() : null, text: "—" }),
@@ -609,8 +650,9 @@
   }
 
   // Round results, in the order their badges are shown, with the badge
-  // style of each.
-  var RESULTS = [["saved", "success"], ["pending", "muted"], ["wasted", "warning"], ["miss", "warning"], ["failed", "failure"], ["unknown", "muted"]];
+  // style of each. Rounds recorded before returns were recorded have the
+  // result "unknown" and no badge.
+  var RESULTS = [["saved", "success"], ["pending", "muted"], ["wasted", "warning"], ["miss", "warning"], ["failed", "failure"]];
   var RESULT_KIND = {};
   RESULTS.forEach(function (r) { RESULT_KIND[r[0]] = r[1]; });
 
@@ -621,8 +663,9 @@
 
   // Amounts are shown once prices were fetched, for conversations with a
   // round that has a result and a price.
-  function pricesReady() {
-    return !!(historyData && historyData.prices && parseTime(historyData.prices.fetched));
+  function pricesReady(data) {
+    data = data || historyData;
+    return !!(data && data.prices && parseTime(data.prices.fetched));
   }
 
   function pricedRounds(t) {
@@ -646,10 +689,11 @@
   }
 
   function roundResult(r) {
+    if (!RESULT_KIND[r.result]) return [];
     var text = r.result === "saved" && r.saved !== undefined && r.saved !== null
       ? translate("result_saved_amount", fmtMoney(r.saved))
       : translate("result_" + r.result);
-    var parts = [badge(RESULT_KIND[r.result] || "muted", text)];
+    var parts = [badge(RESULT_KIND[r.result], text)];
     if (r.return) parts.push(el("span", { class: "result-note", text: translate("round_back", fmtClockSpan(r.idle || 0)) }));
     return parts;
   }
@@ -684,24 +728,52 @@
     ]);
   }
 
-  function renderTotals(data) {
+  // The savings card: the totals of the range in one line and the cache
+  // cost of the requests with Wick, without it and with a 1-hour cache.
+  function renderSavings() {
+    var data = savingsData;
+    if (!data) return;
     var t = data.totals || {};
     var results = t.results || {};
+    var cmp = data.compare || {};
+    var priced = pricesReady(data);
+    var compared = priced && !!parseTime(cmp.since);
     var retention = status && status.config ? status.config.history_retention_days : "";
     var range = translate("range_label_" + data.range, retention);
     var pings = count(t.pings || 0, "n_ping", "n_pings");
     var rounds = count(t.rounds || 0, "n_round", "n_rounds");
     var saved = count(results.saved || 0, "n_round", "n_rounds");
-    $("totals").textContent = pricesReady()
-      ? translate("totals_priced", range, pings, rounds, fmtMoney(t.cost || 0), saved, fmtMoney(t.saved || 0),
-        translate((t.net || 0) >= 0 ? "net_saved" : "net_cost", fmtMoney(t.net || 0)))
-      : translate("totals_plain", range, pings, rounds, saved);
+    // The table shows what the pings saved net, so the line leaves it out.
+    if (compared) $("totals").textContent = translate("totals_compared", range, pings, rounds, fmtMoney(t.cost || 0), saved, fmtMoney(t.saved || 0));
+    else if (priced) {
+      $("totals").textContent = translate("totals_priced", range, pings, rounds, fmtMoney(t.cost || 0), saved, fmtMoney(t.saved || 0),
+        translate((t.net || 0) >= 0 ? "net_saved" : "net_cost", fmtMoney(t.net || 0)));
+    } else $("totals").textContent = translate("totals_plain", range, pings, rounds, saved);
     var notes = [];
     if (t.failed) notes.push(translate("totals_failed", count(t.failed, "n_ping", "n_pings")));
-    if (results.pending && pricesReady()) notes.push(translate("totals_pending", count(results.pending, "n_round", "n_rounds")));
-    if (results.unknown) notes.push(translate("totals_unknown", count(results.unknown, "n_round", "n_rounds")));
-    if (t.unpriced && pricesReady()) notes.push(translate("totals_unpriced", count(t.unpriced, "n_round", "n_rounds")));
+    if (t.unpriced && priced) notes.push(translate("totals_unpriced", count(t.unpriced, "n_round", "n_rounds")));
     $("totals-notes").textContent = notes.join(lang === "zh" ? "" : " ");
+    renderCompare(compared ? cmp : null);
+    renderPriceHint(data);
+  }
+
+  function renderCompare(cmp) {
+    $("compare-wrap").hidden = !cmp;
+    var body = $("compare");
+    clear(body);
+    if (!cmp) return;
+    var none = (cmp.cache || 0) + (cmp.saved || 0);
+    function row(label, cost, base) {
+      var diff = none - cost;
+      body.appendChild(el("tr", null, [
+        el("td", { text: translate(label) }),
+        el("td", { class: "num", text: fmtMoney(cost) }),
+        el("td", { class: "num", text: base ? "—" : translate(diff >= 0 ? "vs_less" : "vs_more", fmtMoney(diff)) })
+      ]));
+    }
+    row("plan_none", none, true);
+    row("plan_wick", (cmp.cache || 0) + (cmp.pings || 0));
+    row("plan_hour", cmp.hour || 0);
   }
 
   function renderPriceHint(data) {
@@ -716,8 +788,6 @@
     var data = historyData;
     if (!data) return;
     var priced = pricesReady();
-    renderTotals(data);
-    renderPriceHint(data);
     var convs = data.conversations || [];
     var body = $("events");
     // Rows are rebuilt on every refresh; the focused one keeps the focus.
@@ -795,7 +865,9 @@
     });
     if (next === Infinity) return;
     pendingTimer = setTimeout(function () {
-      if (key) loadHistory().catch(function () {});
+      if (!key) return;
+      loadHistory().catch(function () {});
+      loadSavings().catch(function () {});
     }, Math.max(1000, next - now() + 2000));
   }
 
@@ -819,6 +891,9 @@
     if (status.last_event !== lastEventSeen) {
       lastEventSeen = status.last_event;
       loadHistory().catch(function () {});
+      loadSavings().catch(function () {});
+    } else if (Date.now() - savingsLoaded >= SAVINGS_REFRESH) {
+      loadSavings(true).catch(function () {});
     }
   }
 
@@ -841,6 +916,33 @@
       if (err.message !== "unauthorized") toast(translate("load_failed", err.message));
       throw err;
     });
+  }
+
+  function savingsPath() {
+    return API + "/savings?range=" + encodeURIComponent(savingsRange);
+  }
+
+  // Responses are numbered, so that a slow one cannot replace a newer one.
+  // A background refresh fails without a message.
+  var savingsSeq = 0;
+  function loadSavings(background) {
+    var path = savingsPath();
+    var seq = ++savingsSeq;
+    savingsLoaded = Date.now();
+    return api("GET", path).then(function (data) {
+      if (seq !== savingsSeq || path !== savingsPath()) return;
+      savingsData = data;
+      renderSavings();
+    }).catch(function (err) {
+      if (!background && err.message !== "unauthorized") toast(translate("load_failed", err.message));
+      throw err;
+    });
+  }
+
+  function selectSavingsRange(value) {
+    savingsRange = value;
+    press($("savings-range-buttons"), value, true);
+    loadSavings().catch(function () {});
   }
 
   function selectRange(value) {
@@ -917,13 +1019,13 @@
 
   // ---- Settings ----
 
-  var FIELDS = ["max_pings", "subagent_max_pings", "interval_min", "interval_max", "min_body_kb", "history_retention_days"];
+  var FIELDS = ["duration_minutes", "subagent_duration_minutes", "interval_min", "interval_max", "min_body_kb", "history_retention_days"];
 
   // The two duration choices: the default for conversations and the one
-  // for subagents, each a row of presets with a field for a custom count.
+  // for subagents, each a row of presets with a field for other minutes.
   var DURATIONS = [
-    { field: "max_pings", buttons: "duration-buttons", custom: "custom-pings" },
-    { field: "subagent_max_pings", buttons: "subagent-buttons", custom: "custom-subagent-pings" }
+    { field: "duration_minutes", buttons: "duration-buttons", custom: "custom-minutes" },
+    { field: "subagent_duration_minutes", buttons: "subagent-buttons", custom: "custom-subagent-minutes" }
   ];
 
   // A field shows the value saved in config.yaml, or the value in effect
@@ -951,34 +1053,28 @@
       var input = form().elements[name];
       if (document.activeElement !== input) input.value = value === undefined ? "" : value;
     });
-    // A saved count that matches a preset selects the preset, also when it
-    // was entered under Custom.
+    // A saved duration that matches a preset selects the preset, also when
+    // it was entered under Custom.
     DURATIONS.forEach(function (d) {
-      var pings = String(configValue(d.field));
-      pressDuration(d, PRESETS.indexOf(pings) < 0 ? "custom" : pings, false);
+      var minutes = String(configValue(d.field));
+      pressDuration(d, PRESETS.indexOf(minutes) < 0 ? "custom" : minutes, false);
     });
     renderDurationHint();
   }
 
-  // The cache lasts until 300 seconds after the last ping; pings come on
-  // average every (interval_min + interval_max) / 2 seconds.
   function renderDurationHint() {
-    var pings = Number(configValue("max_pings")), min = Number(configValue("interval_min")), max = Number(configValue("interval_max"));
-    if (!isFinite(pings) || !isFinite(min) || !isFinite(max)) { $("duration-hint").textContent = $("subagent-hint").textContent = ""; return; }
-    if (pings === 0) {
+    var minutes = Number(configValue("duration_minutes")), min = Number(configValue("interval_min")), max = Number(configValue("interval_max"));
+    if (!isFinite(minutes) || !isFinite(min) || !isFinite(max)) { $("duration-hint").textContent = $("subagent-hint").textContent = ""; return; }
+    if (minutes === 0) {
       $("duration-hint").textContent = translate("duration_hint_off");
       $("subagent-hint").textContent = translate("subagent_hint_wick_off");
       return;
     }
-    $("duration-hint").textContent = translate("duration_hint", fmtSeconds(min), fmtSeconds(max), pings, cacheMinutes(pings, min, max));
-    var sub = Number(configValue("subagent_max_pings"));
+    $("duration-hint").textContent = translate("duration_hint", fmtSeconds(min), fmtSeconds(max), fmtDuration(minutes));
+    var sub = Number(configValue("subagent_duration_minutes"));
     if (!isFinite(sub)) $("subagent-hint").textContent = "";
     else if (sub === 0) $("subagent-hint").textContent = translate("subagent_hint_off");
-    else $("subagent-hint").textContent = translate("subagent_hint", sub, cacheMinutes(sub, min, max));
-  }
-
-  function cacheMinutes(pings, min, max) {
-    return Math.floor((pings * (min + max) / 2 + CACHE_TTL) / 60);
+    else $("subagent-hint").textContent = translate("subagent_hint", fmtDuration(sub));
   }
 
   // Saves are queued so that a later change is not overwritten by an
@@ -1034,6 +1130,13 @@
     } else {
       if (name === "history_retention_days" && !(value >= 1 && value <= 3650)) {
         toast(translate("retention_invalid"));
+        fillSettings();
+        return;
+      }
+      // The cache of a request lasts 5 minutes, so 1 to 5 would keep
+      // nothing lit.
+      if ((name === "duration_minutes" || name === "subagent_duration_minutes") && (value > 1440 || (value >= 1 && value <= 5))) {
+        toast(translate("minutes_invalid"));
         fillSettings();
         return;
       }
@@ -1096,6 +1199,9 @@
   });
   Array.prototype.forEach.call($("range-buttons").querySelectorAll("button"), function (button) {
     button.addEventListener("click", function () { selectRange(button.getAttribute("data-value")); });
+  });
+  Array.prototype.forEach.call($("savings-range-buttons").querySelectorAll("button"), function (button) {
+    button.addEventListener("click", function () { selectSavingsRange(button.getAttribute("data-value")); });
   });
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && key && status) loadStatus().catch(function () {});

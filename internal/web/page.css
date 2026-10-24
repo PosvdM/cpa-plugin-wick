@@ -229,6 +229,9 @@ select:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, v
 .totals { margin: -6px 0 12px; font-size: 13px; color: var(--text-secondary); }
 .hint.totals-notes { margin: -8px 0 12px; }
 .totals-notes:empty { display: none; }
+/* The comparison is a short table of three rows, kept narrow. */
+table.compare { width: auto; min-width: 360px; }
+table.compare th:first-child, table.compare td:first-child { padding-left: 0; padding-right: 32px; }
 /* History rows open their rounds on click. */
 .conv-row { cursor: pointer; }
 .conv-row:focus-visible { outline: none; }
@@ -247,7 +250,6 @@ table.rounds td { padding: 6px 10px; }
 .card > .hint:last-child { margin-top: 12px; }
 #price-hint { margin-top: 12px; }
 #price-hint:empty { display: none; }
-#price-hint:not(:empty) + .hint { margin-top: 4px; }
 
 /* Settings */
 /* Segmented buttons: the thumb is placed under the pressed button by

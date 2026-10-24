@@ -4,6 +4,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -173,6 +174,12 @@ func (p *Plugin) handle(method string, request []byte) ([]byte, error) {
 			p.manager.Complete(done)
 		}
 		return ok(struct{}{})
+	case pluginabi.MethodUsageHandle:
+		var rec pluginapi.UsageRecord
+		if err := json.Unmarshal(request, &rec); err == nil {
+			p.manager.Usage(rec)
+		}
+		return ok(struct{}{})
 	case pluginabi.MethodManagementRegister:
 		return ok(managementRegistration())
 	case pluginabi.MethodManagementHandle:
@@ -206,8 +213,8 @@ func (p *Plugin) registration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				field("interval_min", pluginapi.ConfigFieldTypeInteger, "最短挑灯间隔（秒） / Shortest interval between pings in seconds"),
 				field("interval_max", pluginapi.ConfigFieldTypeInteger, "最长挑灯间隔（秒），不超过 299 / Longest interval between pings in seconds, at most 299"),
-				field("max_pings", pluginapi.ConfigFieldTypeInteger, "一次空闲最多挑灯几次，0 为关闭 / Pings per idle period; 0 turns Wick off"),
-				field("subagent_max_pings", pluginapi.ConfigFieldTypeInteger, "子代理一次空闲最多挑灯几次，0 为不挑灯 / Pings per idle period for subagents; 0 leaves them out"),
+				field("duration_minutes", pluginapi.ConfigFieldTypeInteger, "对话空闲后挑灯多少分钟，0 为关闭 / Minutes an idle conversation is kept lit; 0 turns Wick off"),
+				field("subagent_duration_minutes", pluginapi.ConfigFieldTypeInteger, "子代理空闲后挑灯多少分钟，0 为不挑灯 / Minutes an idle subagent is kept lit; 0 leaves them out"),
 				field("min_body_kb", pluginapi.ConfigFieldTypeInteger, "请求体小于此大小（KiB）时不挑灯 / Skip requests whose body is smaller than this many KiB"),
 				field("history_retention_days", pluginapi.ConfigFieldTypeInteger, "挑灯记录保留天数 / Days of ping history to keep"),
 				field("data_dir", pluginapi.ConfigFieldTypeString, "数据目录，默认 <插件目录>/data/wick / Data directory, <plugins dir>/data/wick by default"),
@@ -216,6 +223,7 @@ func (p *Plugin) registration() registration {
 		Capabilities: map[string]bool{
 			"request_interceptor":      true,
 			"request_lifecycle_plugin": true,
+			"usage_plugin":             true,
 			"management_api":           true,
 		},
 	}
@@ -238,6 +246,7 @@ func managementRegistration() map[string]any {
 		"routes": []route{
 			{Method: http.MethodGet, Path: apiBase + "/status", Description: "Conversations kept lit"},
 			{Method: http.MethodGet, Path: apiBase + "/history", Description: "Ping history"},
+			{Method: http.MethodGet, Path: apiBase + "/savings", Description: "Cost of the pings, the writes they saved, and a comparison with a 1-hour cache"},
 			{Method: http.MethodPost, Path: apiBase + "/duration", Description: "Set how long one conversation is kept lit"},
 			{Method: http.MethodPost, Path: apiBase + "/stop", Description: "Snuff out one conversation"},
 		},
@@ -318,19 +327,21 @@ func (p *Plugin) handleManagement(req pluginapi.ManagementRequest) pluginapi.Man
 		return jsonResponse(http.StatusOK, p.status())
 	case "GET " + apiBase + "/history":
 		return p.historyResponse(req.Query)
+	case "GET " + apiBase + "/savings":
+		return p.savingsResponse(req.Query)
 	case "POST " + apiBase + "/duration":
 		var body struct {
-			Key   string   `json:"key"`
-			Hours *float64 `json:"hours"`
+			Key     string `json:"key"`
+			Minutes *int   `json:"minutes"`
 		}
-		if err := json.Unmarshal(req.Body, &body); err != nil || strings.TrimSpace(body.Key) == "" || body.Hours == nil {
-			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "key and hours are required"})
+		if err := json.Unmarshal(req.Body, &body); err != nil || strings.TrimSpace(body.Key) == "" || body.Minutes == nil {
+			return jsonResponse(http.StatusBadRequest, map[string]string{"error": "key and minutes are required"})
 		}
-		if !(*body.Hours >= 0 && *body.Hours <= keepalive.MaxDurationHours) {
-			return jsonResponse(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("hours must be between 0 and %d", keepalive.MaxDurationHours)})
-		}
-		if !p.manager.SetDuration(strings.TrimSpace(body.Key), *body.Hours) {
-			return jsonResponse(http.StatusNotFound, map[string]string{"error": "conversation not found"})
+		switch err := p.manager.SetDuration(strings.TrimSpace(body.Key), *body.Minutes); {
+		case errors.Is(err, keepalive.ErrNotFound):
+			return jsonResponse(http.StatusNotFound, map[string]string{"error": err.Error()})
+		case err != nil:
+			return jsonResponse(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
 		return jsonResponse(http.StatusOK, p.status())
 	case "POST " + apiBase + "/stop":
@@ -355,9 +366,8 @@ const (
 )
 
 type historyResponse struct {
-	Range  string         `json:"range"`
-	From   time.Time      `json:"from"`
-	Totals history.Totals `json:"totals"`
+	Range string    `json:"range"`
+	From  time.Time `json:"from"`
 	// Prices describes the API prices the amounts are calculated with.
 	Prices pricing.State `json:"prices"`
 	// Count is the number of conversations pinged in the range;
@@ -366,23 +376,42 @@ type historyResponse struct {
 	Conversations []history.Conversation `json:"conversations"`
 }
 
-// historyResponse answers GET /history?range=24h|7d|all&limit=N with the
-// pings summed by conversation and round. "all" covers the retention.
-// Amounts are calculated at the current prices on every query.
-func (p *Plugin) historyResponse(query url.Values) pluginapi.ManagementResponse {
-	now := time.Now()
-	rng := query.Get("range")
-	var from time.Time
+// parseRange returns the start of a range: 24h, 7d, 1m from the same time
+// a month ago, or all, which covers the retention. An empty range is 24h.
+func (p *Plugin) parseRange(rng string, now time.Time) (string, time.Time, bool) {
 	switch rng {
 	case "", "24h":
-		rng, from = "24h", now.Add(-24*time.Hour)
+		return "24h", now.Add(-24 * time.Hour), true
 	case "7d":
-		from = now.AddDate(0, 0, -7)
+		return rng, now.AddDate(0, 0, -7), true
+	case "1m":
+		return rng, now.AddDate(0, -1, 0), true
 	case "all":
-		from = now.AddDate(0, 0, -p.history.Retention()-1)
-	default:
-		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "range must be 24h, 7d or all"})
+		return rng, now.AddDate(0, 0, -p.history.Retention()-1), true
 	}
+	return "", time.Time{}, false
+}
+
+// grouped returns the events of the range in query and the conversations
+// grouped from them.
+func (p *Plugin) grouped(query url.Values, now time.Time) (string, time.Time, []keepalive.Event, []history.Conversation, *pluginapi.ManagementResponse) {
+	rng, from, valid := p.parseRange(query.Get("range"), now)
+	if !valid {
+		resp := jsonResponse(http.StatusBadRequest, map[string]string{"error": "range must be 24h, 7d, 1m or all"})
+		return "", time.Time{}, nil, nil, &resp
+	}
+	events, err := p.history.Query(from)
+	if err != nil {
+		resp := jsonResponse(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return "", time.Time{}, nil, nil, &resp
+	}
+	return rng, from, events, history.Group(events, now, p.prices.Table()), nil
+}
+
+// historyResponse answers GET /history?range=24h|7d|1m|all&limit=N with the
+// pings summed by conversation and round. Amounts are calculated at the
+// current prices on every query.
+func (p *Plugin) historyResponse(query url.Values) pluginapi.ManagementResponse {
 	limit := defaultHistoryLimit
 	if raw := query.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -391,14 +420,37 @@ func (p *Plugin) historyResponse(query url.Values) pluginapi.ManagementResponse 
 		}
 		limit = min(n, maxHistoryLimit)
 	}
-	events, err := p.history.Query(from)
-	if err != nil {
-		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	rng, from, _, convs, errResp := p.grouped(query, time.Now())
+	if errResp != nil {
+		return *errResp
 	}
-	convs := history.Group(events, now, p.prices.Table())
-	resp := historyResponse{Range: rng, From: from, Totals: history.Total(convs), Prices: p.prices.State(), Count: len(convs), Conversations: convs[:min(limit, len(convs))]}
+	resp := historyResponse{Range: rng, From: from, Prices: p.prices.State(), Count: len(convs), Conversations: convs[:min(limit, len(convs))]}
 	if resp.Conversations == nil {
 		resp.Conversations = []history.Conversation{}
 	}
 	return jsonResponse(http.StatusOK, resp)
+}
+
+type savingsResponse struct {
+	Range   string             `json:"range"`
+	From    time.Time          `json:"from"`
+	Totals  history.Totals     `json:"totals"`
+	Compare history.Comparison `json:"compare"`
+	Prices  pricing.State      `json:"prices"`
+}
+
+// savingsResponse answers GET /savings?range=24h|7d|1m|all with the totals
+// of the pings and rounds and the comparison of cache prices.
+func (p *Plugin) savingsResponse(query url.Values) pluginapi.ManagementResponse {
+	rng, from, events, convs, errResp := p.grouped(query, time.Now())
+	if errResp != nil {
+		return *errResp
+	}
+	return jsonResponse(http.StatusOK, savingsResponse{
+		Range:   rng,
+		From:    from,
+		Totals:  history.Total(convs),
+		Compare: history.Compare(events, convs, p.prices.Table()),
+		Prices:  p.prices.State(),
+	})
 }

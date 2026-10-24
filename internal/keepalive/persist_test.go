@@ -39,7 +39,7 @@ func TestRestoreKeepsSchedule(t *testing.T) {
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	key := conversationKey("sess", "", "claude-opus-5-5", body("main", "1"))
 	clock.Advance(260 * time.Second)
-	m.SetDuration(short(key), 2)
+	m.SetDuration(short(key), 120)
 	saveNow(t, m)
 	m.Stop()
 	if _, err := os.Stat(filepath.Join(dir, key+requestExt)); err != nil {
@@ -55,7 +55,7 @@ func TestRestoreKeepsSchedule(t *testing.T) {
 		t.Fatalf("conversations %+v", convs)
 	}
 	c := convs[0]
-	if c.Pings != 1 || !c.NextPing.Equal(start.Add(520*time.Second)) || !c.LastRequest.Equal(start) || c.Until == nil || c.Hours != 2 {
+	if c.Pings != 1 || !c.NextPing.Equal(start.Add(520*time.Second)) || !c.LastRequest.Equal(start) || c.Minutes != 120 {
 		t.Fatalf("restored %+v", c)
 	}
 	clock2.Advance(160 * time.Second)

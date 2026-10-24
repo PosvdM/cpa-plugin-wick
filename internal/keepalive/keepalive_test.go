@@ -142,6 +142,11 @@ func newRecordingManager(cfg config.Config) (*Manager, *fakeClock, *fakeHost, *f
 	return m, clock, h, rec
 }
 
+// defaultPings is the number of pings in the default 30 minutes with the
+// test's random delay of 0: at 260 s and every 260 s after, until the
+// cache of one, at 1560 s, lasts past 1800 s.
+const defaultPings = 6
+
 func testConfig() config.Config {
 	cfg := config.Default()
 	cfg.MinBodyKB = 0
@@ -226,9 +231,11 @@ func TestConversationKeyIgnoresBillingAndMessages(t *testing.T) {
 	}
 }
 
-func TestPingsUntilMaxPings(t *testing.T) {
+// Pings continue until the cache lasts the duration after the last
+// request: with 15 minutes the third ping, at 780 s, keeps it until 1080 s.
+func TestPingsUntilDuration(t *testing.T) {
 	cfg := testConfig()
-	cfg.MaxPings = 3
+	cfg.DurationMinutes = 15
 	m, clock, h := newTestManager(cfg)
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 
@@ -249,13 +256,26 @@ func TestPingsUntilMaxPings(t *testing.T) {
 	}
 	clock.Advance(time.Hour)
 	if h.pings() != 3 {
-		t.Fatalf("pings %d, want max_pings 3", h.pings())
+		t.Fatalf("pings %d, want 3", h.pings())
 	}
 	if len(m.Status().Conversations) != 0 {
-		t.Fatal("conversation kept after max_pings")
+		t.Fatal("conversation kept after its duration")
 	}
-	if last := h.logs[len(h.logs)-1]; !strings.Contains(last, "wick: ping session=sess ") || !strings.Contains(last, " ping=3 stopped=max_pings cache_read=40000 cache_creation=0 input=3 output=1") {
+	if last := h.logs[len(h.logs)-1]; !strings.Contains(last, "wick: ping session=sess ") || !strings.Contains(last, " ping=3 stopped=until cache_read=40000 cache_creation=0 input=3 output=1") {
 		t.Fatalf("log message %q", last)
+	}
+}
+
+// The cache of a request lasts 5 minutes, so a duration that short needs
+// no pings.
+func TestShortDurationSendsNoPings(t *testing.T) {
+	cfg := testConfig()
+	cfg.DurationMinutes = 5
+	m, clock, h := newTestManager(cfg)
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	clock.Advance(time.Hour)
+	if h.pings() != 0 || len(m.Status().Conversations) != 0 {
+		t.Fatalf("pings %d conversations %d", h.pings(), len(m.Status().Conversations))
 	}
 }
 
@@ -274,48 +294,48 @@ func TestNewRequestResetsSchedule(t *testing.T) {
 	}
 }
 
-func TestSubagentsUseTheirOwnLimit(t *testing.T) {
+func TestSubagentsUseTheirOwnDuration(t *testing.T) {
 	cfg := testConfig()
-	cfg.MaxPings, cfg.SubagentMaxPings = 6, 2
+	cfg.DurationMinutes, cfg.SubagentDurationMinutes = 30, 10
 	m, clock, h := newTestManager(cfg)
 	m.Observe(withAgent(intercept("r1", "sess", body("worker", "1")), "a1"))
-	if c := m.Status().Conversations[0]; c.MaxPings != 2 {
-		t.Fatalf("subagent limit %d, want 2", c.MaxPings)
+	if c := m.Status().Conversations[0]; c.DefaultMinutes != 10 || !c.Until.Equal(start.Add(10*time.Minute)) {
+		t.Fatalf("subagent duration %+v, want 10 minutes", c)
 	}
 	clock.Advance(time.Hour)
 	if h.pings() != 2 || len(m.Status().Conversations) != 0 {
-		t.Fatalf("pings %d, want subagent_max_pings 2", h.pings())
+		t.Fatalf("pings %d, want 2", h.pings())
 	}
-	// A time set on the page replaces the subagent limit.
+	// A time set on the page replaces the subagent duration.
 	m.Observe(withAgent(intercept("r2", "sess", body("worker", "2")), "a1"))
-	m.SetDuration(m.Status().Conversations[0].Key, 1)
+	m.SetDuration(m.Status().Conversations[0].Key, 60)
 	clock.Advance(3 * 260 * time.Second)
 	if h.pings() != 5 || len(m.Status().Conversations) != 1 {
 		t.Fatalf("pings %d with a time set, want 3 more", h.pings())
 	}
 }
 
-func TestLoweredLimitSnuffsOut(t *testing.T) {
+func TestShortenedDurationSnuffsOut(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	m.Observe(intercept("r2", "sess", body("other", "1")))
 	clock.Advance(2 * 260 * time.Second)
-	m.SetDuration(m.Status().Conversations[1].Key, 1)
+	m.SetDuration(m.Status().Conversations[1].Key, 60)
 	cfg := testConfig()
-	cfg.MaxPings = 2
+	cfg.DurationMinutes = 10
 	m.Configure(cfg)
 	convs := m.Status().Conversations
-	if h.pings() != 4 || len(convs) != 1 || convs[0].Until == nil {
+	if h.pings() != 4 || len(convs) != 1 || convs[0].Minutes != 60 {
 		t.Fatalf("pings %d conversations %+v, want only the one with a time set", h.pings(), convs)
 	}
 }
 
-func TestSubagentMaxPingsZero(t *testing.T) {
+func TestSubagentDurationZero(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	m.Observe(withAgent(intercept("r2", "sess", body("worker", "1")), "a1"))
 	cfg := testConfig()
-	cfg.SubagentMaxPings = 0
+	cfg.SubagentDurationMinutes = 0
 	m.Configure(cfg)
 	convs := m.Status().Conversations
 	if len(convs) != 1 || convs[0].Agent {
@@ -413,17 +433,17 @@ func TestWorkingDirectoryAndFirstPrompt(t *testing.T) {
 	}
 }
 
-func TestSetDurationReplacesMaxPings(t *testing.T) {
+func TestSetDurationReplacesDefault(t *testing.T) {
 	m, clock, h, rec := newRecordingManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
-	if m.SetDuration(key, 25) || m.SetDuration("unknown", 1) {
+	if m.SetDuration(key, 25*60) == nil || !errors.Is(m.SetDuration("unknown", 60), ErrNotFound) {
 		t.Fatal("accepted an invalid duration or key")
 	}
-	if !m.SetDuration(key, 2) {
-		t.Fatal("conversation not found")
+	if err := m.SetDuration(key, 120); err != nil {
+		t.Fatal(err)
 	}
-	if c := m.Status().Conversations[0]; c.Until == nil || !c.Until.Equal(start.Add(2*time.Hour)) || c.Hours != 2 {
+	if c := m.Status().Conversations[0]; !c.Until.Equal(start.Add(2*time.Hour)) || c.Minutes != 120 {
 		t.Fatalf("status %+v", c)
 	}
 	clock.Advance(3 * time.Hour)
@@ -437,41 +457,85 @@ func TestSetDurationReplacesMaxPings(t *testing.T) {
 	}
 }
 
+// A duration counts from the last request; one the cache already lasts
+// past is refused and changes nothing.
+func TestSetDurationRefusesPassedDuration(t *testing.T) {
+	m, clock, h := newTestManager(testConfig())
+	m.Observe(intercept("r1", "sess", body("main", "1")))
+	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
+	if !errors.Is(m.SetDuration(key, 5), ErrPassed) {
+		t.Fatal("accepted a duration the cache already lasts")
+	}
+	// The ping at 260 s keeps the cache until 560 s.
+	clock.Advance(270 * time.Second)
+	if h.pings() != 1 {
+		t.Fatalf("pings %d", h.pings())
+	}
+	if !errors.Is(m.SetDuration(key, 9), ErrPassed) {
+		t.Fatal("accepted 9 minutes with the cache alive until 560 s")
+	}
+	if c := m.Status().Conversations[0]; c.Minutes != 0 {
+		t.Fatalf("refused duration was set: %+v", c)
+	}
+	if err := m.SetDuration(key, 10); err != nil {
+		t.Fatal(err)
+	}
+	if c := m.Status().Conversations[0]; !c.Until.Equal(start.Add(10 * time.Minute)) {
+		t.Fatalf("status %+v", c)
+	}
+	clock.Advance(time.Hour)
+	// The ping at 520 s keeps the cache past 600 s and is the last.
+	if h.pings() != 2 {
+		t.Fatalf("pings %d, want 2", h.pings())
+	}
+}
+
 func TestNewRequestClearsDuration(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
-	m.SetDuration(key, 8)
+	m.SetDuration(key, 480)
 	m.Observe(intercept("r2", "sess", body("main", "2")))
-	if c := m.Status().Conversations[0]; c.Until != nil {
+	if c := m.Status().Conversations[0]; c.Minutes != 0 {
 		t.Fatalf("duration kept after a new request: %+v", c)
 	}
 	clock.Advance(8 * time.Hour)
-	if h.pings() != testConfig().MaxPings {
-		t.Fatalf("pings %d, want max_pings", h.pings())
+	if h.pings() != defaultPings {
+		t.Fatalf("pings %d, want %d", h.pings(), defaultPings)
 	}
 }
 
-func TestResetDurationAfterMaxPings(t *testing.T) {
+// Returning to the default duration after the cache already lasts it
+// would snuff out the conversation, so it is refused; before that it is
+// allowed.
+func TestResetDurationAfterDefaultPassed(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
-	m.SetDuration(key, 1)
-	clock.Advance(40 * time.Minute)
-	if !m.SetDuration(key, 0) || len(m.Status().Conversations) != 0 {
-		t.Fatal("conversation kept after resetting a duration past max_pings")
+	m.SetDuration(key, 60)
+	clock.Advance(10 * time.Minute)
+	if err := m.SetDuration(key, 0); err != nil {
+		t.Fatal(err)
+	}
+	m.SetDuration(key, 60)
+	clock.Advance(30 * time.Minute)
+	if !errors.Is(m.SetDuration(key, 0), ErrPassed) {
+		t.Fatal("reset a duration past the default")
+	}
+	if c := m.Status().Conversations; len(c) != 1 || c[0].Minutes != 60 {
+		t.Fatalf("conversations %+v", c)
 	}
 	n := h.pings()
-	clock.Advance(time.Hour)
-	if h.pings() != n {
-		t.Fatal("pinged after the reset")
+	clock.Advance(10 * time.Minute)
+	if h.pings() == n {
+		t.Fatal("stopped pinging after the refused reset")
 	}
 }
 
 func TestEvictionSparesSetDurations(t *testing.T) {
 	m, clock, _ := newTestManager(testConfig())
 	m.Observe(intercept("r0", "kept", body("main", "1")))
-	m.SetDuration(short(conversationKey("kept", "", "claude-opus-5-5", body("main", "1"))), 4)
+	m.SetDuration(short(conversationKey("kept", "", "claude-opus-5-5", body("main", "1"))), 240)
 	for i := 1; i <= maxConversations; i++ {
 		clock.Advance(time.Second)
 		m.Observe(intercept(fmt.Sprintf("r%d", i), fmt.Sprintf("s%d", i), body("main", "1")))
@@ -608,15 +672,15 @@ func TestParallelSubagentsWithAgentIDs(t *testing.T) {
 	}
 }
 
-func TestMaxPingsZeroCancelsSchedules(t *testing.T) {
+func TestDurationZeroCancelsSchedules(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	cfg := testConfig()
-	cfg.MaxPings = 0
+	cfg.DurationMinutes = 0
 	m.Configure(cfg)
 	clock.Advance(time.Hour)
 	if h.pings() != 0 {
-		t.Fatal("pinged after max_pings was set to 0")
+		t.Fatal("pinged after duration_minutes was set to 0")
 	}
 }
 
@@ -635,8 +699,8 @@ func TestStalePingAfterRecreate(t *testing.T) {
 		t.Fatal("stale timer sent a ping")
 	}
 	clock.Advance(time.Hour)
-	if h.pings() != testConfig().MaxPings {
-		t.Fatalf("pings %d, want one chain of %d", h.pings(), testConfig().MaxPings)
+	if h.pings() != defaultPings {
+		t.Fatalf("pings %d, want one chain of %d", h.pings(), defaultPings)
 	}
 }
 
@@ -690,7 +754,7 @@ func TestNewToolSnuffsOutTheOldKey(t *testing.T) {
 		t.Fatalf("log %q", last)
 	}
 	clock.Advance(time.Hour)
-	if h.pings() != testConfig().MaxPings {
+	if h.pings() != defaultPings {
 		t.Fatalf("pings %d, want one chain", h.pings())
 	}
 }
@@ -721,14 +785,14 @@ func returns(rec *fakeRecorder) []Event {
 	return out
 }
 
-func TestReturnAfterMaxPingsSaves(t *testing.T) {
+func TestReturnAfterDurationSaves(t *testing.T) {
 	cfg := testConfig()
-	cfg.MaxPings = 2
+	cfg.DurationMinutes = 10
 	m, clock, _, rec := newRecordingManager(cfg)
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	clock.Advance(520 * time.Second) // pings at 260 s and 520 s, then snuffed out
 	if n := len(m.Status().Conversations); n != 0 {
-		t.Fatalf("conversations %d after max_pings", n)
+		t.Fatalf("conversations %d after the duration", n)
 	}
 	for _, ev := range rec.all() {
 		if !ev.Returns {
@@ -763,7 +827,7 @@ func TestReturnTooEarlyOrTooLateSavesNothing(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	cfg.MaxPings = 1
+	cfg.DurationMinutes = 9
 	m, clock, _, rec = newRecordingManager(cfg)
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	clock.Advance(260*time.Second + cacheTTL) // the cache of the only ping expired
@@ -775,7 +839,7 @@ func TestReturnTooEarlyOrTooLateSavesNothing(t *testing.T) {
 
 func TestReplacedConversationHasNoReturn(t *testing.T) {
 	cfg := testConfig()
-	cfg.MaxPings = 1
+	cfg.DurationMinutes = 9
 	m, clock, _, rec := newRecordingManager(cfg)
 	m.Observe(intercept("r1", "sess", chat("main", []string{"Bash"}, "a", "b")))
 	clock.Advance(400 * time.Second)

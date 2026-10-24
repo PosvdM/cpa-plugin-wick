@@ -55,15 +55,14 @@ type savedIndex struct {
 }
 
 type savedConversation struct {
-	Key         string     `json:"key"`
-	FirstSeen   time.Time  `json:"first_seen"`
-	LastRequest time.Time  `json:"last_request"`
-	LastRead    time.Time  `json:"last_read"`
-	NextPing    time.Time  `json:"next_ping"`
-	Pings       int        `json:"pings"`
-	Until       *time.Time `json:"until,omitempty"`
-	Hours       float64    `json:"hours,omitempty"`
-	LastUsage   *Usage     `json:"last_usage,omitempty"`
+	Key         string    `json:"key"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastRequest time.Time `json:"last_request"`
+	LastRead    time.Time `json:"last_read"`
+	NextPing    time.Time `json:"next_ping"`
+	Pings       int       `json:"pings"`
+	Minutes     int       `json:"minutes,omitempty"`
+	LastUsage   *Usage    `json:"last_usage,omitempty"`
 
 	gen uint64
 	req request
@@ -164,14 +163,11 @@ func (m *Manager) snapshotLocked() []savedConversation {
 			NextPing:    c.nextPing,
 			Pings:       c.pings,
 			LastUsage:   c.lastUsage,
+			Minutes:     c.minutes,
 			gen:         c.gen,
 			// The request is never modified after parseRequest, so
 			// sharing its body and headers is safe.
 			req: c.req,
-		}
-		if !c.until.IsZero() {
-			until := c.until
-			sc.Until, sc.Hours = &until, c.hours
 		}
 		convs = append(convs, sc)
 	}
@@ -329,11 +325,9 @@ func (m *Manager) restoreLocked() {
 			lastRead:    sc.LastRead,
 			pings:       sc.Pings,
 			lastUsage:   sc.LastUsage,
+			minutes:     sc.Minutes,
 		}
-		if sc.Until != nil {
-			c.until, c.hours = *sc.Until, sc.Hours
-		}
-		// The limit may have been lowered while Wick was not running.
+		// The duration may have been shortened while Wick was not running.
 		if m.doneLocked(c) {
 			continue
 		}

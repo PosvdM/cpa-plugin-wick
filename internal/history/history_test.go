@@ -170,3 +170,51 @@ func TestRoundsAndAmounts(t *testing.T) {
 }
 
 func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
+
+func TestCompare(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	at := func(minutes int) time.Time { return now.Add(time.Duration(minutes) * time.Minute) }
+	request := func(minutes int, idle, context, read, write int64) keepalive.Event {
+		return keepalive.Event{Time: at(minutes), Key: "a", Model: "claude-opus-5-5", Kind: keepalive.KindRequest, Idle: idle, Context: context,
+			Usage: &keepalive.Usage{CacheReadTokens: read, CacheCreationTokens: write, InputTokens: 1}}
+	}
+	hit := &keepalive.Usage{CacheReadTokens: 100000}
+	events := []keepalive.Event{
+		// A round that ended before the first request with usage is left
+		// out; one that ended after it counts, though it started before.
+		{Time: at(-120), Key: "a", Model: "claude-opus-5-5", Ping: 1, Usage: hit, Returns: true},
+		{Time: at(-104), Key: "c", Model: "claude-opus-5-5", Ping: 1, Usage: hit, Returns: true},
+		{Time: at(-99), Key: "c", Kind: keepalive.KindReturn, Returns: true, Saved: true, Context: 100000, Idle: 600},
+		// A new conversation writes everything either way.
+		request(-100, 0, 0, 0, 100000),
+		// Back after 10 minutes: the 5-minute cache expired, the 1-hour
+		// one would hold the previous input.
+		request(-90, 600, 100000, 0, 110000),
+		// Back after 2 minutes: a hit either way.
+		request(-80, 120, 110000, 110000, 5000),
+		// Kept lit for more than an hour: saved here, a write with a
+		// 1-hour cache.
+		{Time: at(-20), Key: "a", Model: "claude-opus-5-5", Ping: 1, Usage: hit, Returns: true},
+		{Time: at(-18), Key: "a", Kind: keepalive.KindReturn, Returns: true, Saved: true, Context: 100000, Idle: 4000},
+		request(-18, 0, 0, 100000, 0),
+		{Time: at(-10), Key: "b", Model: "gpt-5", Kind: keepalive.KindRequest, Usage: hit},
+	}
+	prices := &pricing.Table{Models: []pricing.Model{{Family: "opus", Version: "5.5", Tiers: []pricing.Tier{{Rates: pricing.Rates{Input: 4, Write5m: 5, Write1h: 8, Read: 0.2, Output: 20}}}}}}
+	convs := Group(events, now, prices)
+	if len(convs) != 2 || len(convs[0].Detail) != 2 {
+		t.Fatalf("requests changed the grouping: %+v", convs)
+	}
+	got := Compare(events, convs, prices)
+	if got.Since == nil || !got.Since.Equal(at(-100)) || got.Requests != 4 || got.Unpriced != 1 {
+		t.Fatalf("comparison %+v", got)
+	}
+	// Cache: 0.5 + 0.55 + (0.022 + 0.025) + 0.02.
+	// Hour: 0.8 + (0.02 + 0.08) + (0.022 + 0.04) + 0.02 + 0.78 for the
+	// return kept lit past an hour.
+	if !near(got.Cache, 1.117) || !near(got.Hour, 1.762) || !near(got.Pings, 0.04) || !near(got.Saved, 0.96) {
+		t.Fatalf("amounts %+v", got)
+	}
+	if empty := Compare(events, convs, nil); empty.Since != nil || empty.Requests != 0 {
+		t.Fatalf("comparison without prices %+v", empty)
+	}
+}

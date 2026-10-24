@@ -55,6 +55,7 @@ type request struct {
 	Prompt    string
 	AuthID    string
 	RequestID string
+	TraceID   string
 	Headers   http.Header
 	// Body is a copy of the client body. The replay sends it unchanged, so
 	// upstream sees the same request as one canceled right after sending.
@@ -99,6 +100,7 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int) (requ
 		Key:       conversationKey(session, agent, model, req.Body),
 		Model:     model,
 		RequestID: req.RequestID,
+		TraceID:   req.TraceID,
 		Client:    clientEntrypoint(req.Headers.Get("User-Agent")),
 		Cwd:       workingDirectory(req.Body),
 		Prompt:    firstPrompt(req.Body),

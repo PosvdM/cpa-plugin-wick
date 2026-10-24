@@ -229,8 +229,12 @@ const (
 	ResultUnknown = "unknown"
 )
 
-// cacheTTL is how long a prompt cache entry lives after it was last read.
-const cacheTTL = 5 * time.Minute
+// cacheTTL and hourTTL are how long a 5-minute and a 1-hour prompt cache
+// entry live after they were last read.
+const (
+	cacheTTL = 5 * time.Minute
+	hourTTL  = time.Hour
+)
 
 // Totals sums pings and rounds.
 type Totals struct {
@@ -381,8 +385,11 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 		if id == "" {
 			id = "session:" + ev.Session
 		}
+		if ev.Kind == keepalive.KindRequest {
+			continue
+		}
 		i, ok := index[id]
-		if ev.Kind != "" {
+		if ev.Kind == keepalive.KindReturn {
 			if ok && open[i] {
 				c := &out[i]
 				r := &c.Detail[len(c.Detail)-1]
@@ -481,4 +488,94 @@ func (r *Round) judge(now time.Time, prices *pricing.Table) {
 			r.Cost = nil
 		}
 	}
+}
+
+// Comparison prices the cache of the conversations Wick keeps lit three
+// ways, in US dollars at API prices: with Wick (Cache plus Pings), without
+// it (Cache plus Saved), and with a 1-hour cache and no pings (Hour).
+// Uncached input and output cost the same in all three and are left out.
+type Comparison struct {
+	// Since is the first request with usage in the range. Rounds that
+	// ended before it, by their return or last ping, are left out; it is
+	// nil when there is none.
+	Since    *time.Time `json:"since,omitempty"`
+	Requests int        `json:"requests"`
+	// Cache is what the requests paid for cache reads and 5-minute writes.
+	Cache float64 `json:"cache"`
+	// Pings is the cost of the pings and Saved the cache writes they saved.
+	Pings float64 `json:"pings"`
+	Saved float64 `json:"saved"`
+	Hour  float64 `json:"hour"`
+	// Unpriced counts the requests and rounds whose model has no price.
+	Unpriced int `json:"unpriced"`
+}
+
+// Compare prices the requests among events and the rounds of convs, both
+// grouped from the same events, three ways. It returns an empty Comparison
+// when prices is nil.
+//
+// With a 1-hour cache a request reads and writes the same tokens as it did,
+// writes priced at the 1-hour rate, with two exceptions. A request that
+// came 5 minutes to an hour after the previous one and read less than that
+// request's input found the 5-minute cache expired; the 1-hour cache would
+// still hold that input. A request that came back more than an hour later
+// to a cache kept lit by Wick would find the 1-hour cache expired and write
+// the context again.
+func Compare(events []keepalive.Event, convs []Conversation, prices *pricing.Table) Comparison {
+	var out Comparison
+	if prices == nil {
+		return out
+	}
+	for _, ev := range events {
+		if ev.Kind != keepalive.KindRequest || ev.Usage == nil {
+			continue
+		}
+		if out.Since == nil {
+			t := ev.Time
+			out.Since = &t
+		}
+		u := ev.Usage
+		cached := u.CacheReadTokens + u.CacheCreationTokens
+		rates, ok := prices.Lookup(ev.Model, cached+u.InputTokens)
+		if !ok {
+			out.Unpriced++
+			continue
+		}
+		out.Requests++
+		out.Cache += pricing.Cost(u.CacheReadTokens, rates.Read) + pricing.Cost(u.CacheCreationTokens, rates.Write5m)
+		read := u.CacheReadTokens
+		if ev.Idle >= int64(cacheTTL/time.Second) && ev.Context > read {
+			read = min(ev.Context, cached)
+		}
+		out.Hour += pricing.Cost(read, rates.Read) + pricing.Cost(cached-read, rates.Write1h)
+	}
+	if out.Since == nil {
+		return out
+	}
+	for _, c := range convs {
+		for _, r := range c.Detail {
+			end := r.Last
+			if r.Return != nil {
+				end = *r.Return
+			}
+			if end.Before(*out.Since) || r.Result == ResultUnknown {
+				continue
+			}
+			if r.Cost == nil {
+				out.Unpriced++
+				continue
+			}
+			out.Pings += *r.Cost
+			if r.Saved == nil {
+				continue
+			}
+			out.Saved += *r.Saved
+			if r.Idle >= int64(hourTTL/time.Second) {
+				if rates, ok := prices.Lookup(r.Model, r.savedContext); ok {
+					out.Hour += pricing.Cost(r.savedContext, rates.Write1h-rates.Read)
+				}
+			}
+		}
+	}
+	return out
 }
