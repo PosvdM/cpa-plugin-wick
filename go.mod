@@ -5,6 +5,7 @@ go 1.26.10
 require (
 	github.com/router-for-me/CLIProxyAPI/v8 v8.0.43
 	github.com/tidwall/gjson v1.20.0
+	github.com/tidwall/sjson v1.2.5
 	gopkg.in/yaml.v3 v3.0.1
 )
 

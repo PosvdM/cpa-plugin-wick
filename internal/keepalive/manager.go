@@ -20,6 +20,7 @@ import (
 	"github.com/PosvdM/cpa-plugin-wick/internal/host"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -486,22 +487,26 @@ func (m *Manager) pruneEndedLocked(now time.Time) {
 
 // replaceLocked snuffs out the conversations that req continues under a
 // new key: same session and agent, and req's messages open with the old
-// request's messages, all but the last one, which Claude Code extends with
-// the next turn, unchanged. The key changes when tools are added, such as
-// MCP servers or deferred tools loaded mid-conversation, or when the system
-// prompt or the model changes. The cache is matched from the start, tools
-// first, so the old conversation's cache can no longer be read. Comparing
-// the messages spares Claude Code's helper requests, which share the
-// session ID but do not continue the conversation.
+// request's messages, all but the last one, which clients may extend with
+// the next turn, unchanged apart from cache_control. The key changes when
+// tools are added, such as MCP servers or deferred tools loaded
+// mid-conversation, or when the system prompt or the model changes. The
+// cache is matched from the start, tools first, so the old conversation's
+// cache can no longer be read. Comparing the messages spares Claude Code's
+// helper requests, which share the session ID but do not continue the
+// conversation.
 func (m *Manager) replaceLocked(req request) {
-	var messages []gjson.Result
+	var messages []string
 	parsed := false
 	for key, other := range m.convs {
 		if other.req.CallerScope != req.CallerScope || other.req.Session != req.Session || other.req.Agent != req.Agent {
 			continue
 		}
 		if !parsed {
-			messages, parsed = gjson.GetBytes(req.Body, "messages").Array(), true
+			for _, msg := range gjson.GetBytes(req.Body, "messages").Array() {
+				messages = append(messages, messageWithoutCacheControl(msg))
+			}
+			parsed = true
 		}
 		if continues(other.req.Body, messages) {
 			m.removeLocked(key)
@@ -511,19 +516,37 @@ func (m *Manager) replaceLocked(req request) {
 }
 
 // continues reports whether messages open with the messages of the request
-// body old, all but the last one, unchanged. A conversation of one message
-// is never matched, since none of it can be compared.
-func continues(old []byte, messages []gjson.Result) bool {
+// body old, all but the last one, ignoring cache_control on messages and
+// their direct content blocks. A conversation of one message is never
+// matched, since none of it can be compared.
+func continues(old []byte, messages []string) bool {
 	before := gjson.GetBytes(old, "messages").Array()
 	if len(before) < 2 || len(messages) < len(before) {
 		return false
 	}
 	for i := 0; i < len(before)-1; i++ {
-		if before[i].Raw != messages[i].Raw {
+		if messageWithoutCacheControl(before[i]) != messages[i] {
 			return false
 		}
 	}
 	return true
+}
+
+// messageWithoutCacheControl ignores cache markers on the message and its
+// direct content blocks, leaving nested tool inputs and results untouched.
+func messageWithoutCacheControl(msg gjson.Result) string {
+	raw := msg.Raw
+	if msg.Get("cache_control").Exists() {
+		raw, _ = sjson.Delete(raw, "cache_control")
+	}
+	if content := msg.Get("content"); content.IsArray() {
+		for i, block := range content.Array() {
+			if block.Get("cache_control").Exists() {
+				raw, _ = sjson.Delete(raw, fmt.Sprintf("content.%d.cache_control", i))
+			}
+		}
+	}
+	return raw
 }
 
 // Complete handles the end of an intercepted request. A failed request
