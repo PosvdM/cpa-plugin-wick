@@ -8,7 +8,8 @@
 >
 > The Chinese name, 挑灯 (tiǎo dēng), means trimming the wick of an oil lamp: when a lamp has burned for a while and the flame grows dim, a light touch to the wick with a hairpin makes it bright again. Wick makes the same small move: when a conversation is idle and its cache is about to expire, it sends the last request once more and the cache stays alive.
 >
-> The lamp series: [Lamplighter](https://github.com/PosvdM/cpa-plugin-lamplighter) lights the next quota window on time, and Wick watches over the conversation in progress so that its lamp does not go out.
+> - [Lamplighter](https://github.com/PosvdM/cpa-plugin-lamplighter): lights the next quota window on time
+> - Wick: watches over the conversation in progress so that its lamp does not go out
 
 Wick is a native plugin for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA). When native Claude Code uses a Claude subscription account through CPA's Claude Messages endpoint, Wick reads the 5-minute prompt cache on a schedule while a conversation is idle, so the next message still hits the existing cache. Pings for pi and other clients are off by default; see [Client limitations](#client-limitations) for compatibility requirements. Each read is called a ping; stopping the pings is called snuffing out.
 

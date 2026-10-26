@@ -8,7 +8,8 @@
 >
 > 油灯点久了，火光渐弱，用簪子轻轻拨一下灯芯，火焰又亮起来，这就是“挑灯”。Wick 做的也是这样一个轻微的动作：对话空闲、缓存快要过期时，把上一个请求重发一次，缓存就继续有效。
 >
-> “灯”系列：[Lamplighter](https://github.com/PosvdM/cpa-plugin-lamplighter)（点灯人）按时点亮下一个额度窗口，Wick（挑灯）守着正在进行的对话，不让灯熄灭。
+> - [Lamplighter](https://github.com/PosvdM/cpa-plugin-lamplighter)（点灯人）：按时点亮下一个额度窗口
+> - Wick（挑灯）：守着正在进行的对话，不让灯熄灭
 
 Wick（挑灯）是 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA）的原生插件。原生 Claude Code 经 CPA 的 Claude Messages 接口使用 Claude 订阅账号时，Wick 在对话空闲期间定时读取一次 5 分钟提示缓存，回到对话时仍能命中原来的缓存。pi 等其他客户端的挑灯默认关闭，兼容条件见[客户端限制](#客户端限制)。每一次读取称为“挑灯”，停止挑灯称为“熄灭”。
 
