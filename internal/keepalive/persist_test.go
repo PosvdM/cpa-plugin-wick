@@ -37,7 +37,7 @@ func TestRestoreKeepsSchedule(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.SetStore(dir)
 	m.Observe(intercept("r1", "sess", body("main", "1")))
-	key := conversationKey("sess", "", "claude-opus-5-5", body("main", "1"))
+	key := conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1"))
 	clock.Advance(260 * time.Second)
 	m.SetDuration(short(key), 120)
 	saveNow(t, m)
@@ -117,7 +117,7 @@ func TestStopSavesLatestState(t *testing.T) {
 	clock.Advance(100 * time.Second)
 	m.Observe(intercept("r2", "sess", body("main", "2")))
 	m.Observe(intercept("r3", "other", body("main", "1")))
-	m.StopConversation(short(conversationKey("other", "", "claude-opus-5-5", body("main", "1"))))
+	m.StopConversation(short(conversationKey("", "other", "", "claude-opus-5-5", body("main", "1"))))
 	m.Stop()
 
 	m2, clock2, h2 := restoredManager(dir, start.Add(150*time.Second))
@@ -154,7 +154,7 @@ func TestEndedConversationFilesAreDeleted(t *testing.T) {
 	m.SetStore(dir)
 	defer m.Stop()
 	m.Observe(intercept("r1", "sess", body("main", "1")))
-	key := conversationKey("sess", "", "claude-opus-5-5", body("main", "1"))
+	key := conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1"))
 	saveNow(t, m)
 	if info, err := os.Stat(filepath.Join(dir, key+requestExt)); err != nil || (info.Mode().Perm()&0o077 != 0 && os.PathSeparator == '/') {
 		t.Fatalf("request file %v err %v", info, err)

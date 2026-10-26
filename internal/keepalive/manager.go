@@ -325,7 +325,7 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) []byte {
 		m.mu.Lock()
 		for key, c := range m.convs {
 			if req.Other {
-				if !c.req.Other || c.req.Session != req.Session || c.req.Agent != req.Agent || c.req.Model != req.Model {
+				if !c.req.Other || c.req.CallerScope != req.CallerScope || c.req.Session != req.Session || c.req.Agent != req.Agent || c.req.Model != req.Model {
 					continue
 				}
 				if identity == "" || cacheIdentityKey(c.req.Body) != identity {
@@ -394,7 +394,7 @@ func (m *Manager) observeLocked(req request, now time.Time) (Event, bool) {
 		// Subagent requests carry an agent ID; without one every request is
 		// treated as the main conversation.
 		for key, other := range m.convs {
-			if req.Agent == "" && key != req.Key && other.req.Session == req.Session && other.firstSeen.After(c.lastRequest) {
+			if req.Agent == "" && key != req.Key && other.req.Session == req.Session && other.req.CallerScope == req.CallerScope && other.firstSeen.After(c.lastRequest) {
 				m.removeLocked(key)
 				m.logLocked("debug", "subagent finished, keep-alive stopped", other.req, other.pings, stopSuperseded)
 			}
@@ -501,7 +501,7 @@ func (m *Manager) replaceLocked(req request) {
 	var messages []gjson.Result
 	parsed := false
 	for key, other := range m.convs {
-		if other.req.Session != req.Session || other.req.Agent != req.Agent {
+		if other.req.CallerScope != req.CallerScope || other.req.Session != req.Session || other.req.Agent != req.Agent {
 			continue
 		}
 		if !parsed {
@@ -776,6 +776,7 @@ func (m *Manager) ping(req request) (*Usage, error) {
 		Body:          req.Body,
 		Headers:       req.Headers,
 		AuthID:        req.AuthID,
+		CallerScope:   req.CallerScope,
 	})
 	if err != nil {
 		return nil, err

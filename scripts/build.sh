@@ -5,6 +5,6 @@ set -eu
 VERSION=${1:-0.0.0-dev}
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -p "$ROOT/dist"
-docker run --rm -v "$ROOT:/src" -w /src -v wick-gomod:/go/pkg/mod golang:1.26-bookworm \
+docker run --rm -v "$ROOT:/src" -w /src -v wick-gomod:/go/pkg/mod golang:1.26.10-bookworm \
   sh -c "go build -buildvcs=false -trimpath -buildmode=c-shared -ldflags '-s -w -X main.version=$VERSION' -o dist/wick-v$VERSION.so . && rm -f dist/wick-v$VERSION.h"
 echo "$ROOT/dist/wick-v$VERSION.so"

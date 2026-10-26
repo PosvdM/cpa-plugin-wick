@@ -15,7 +15,7 @@ import (
 
 var legacyClaudeSessionPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
-// requestSession follows CPA v8.0.39's ExtractSessionInfo priority for the
+// requestSession follows CPA v8.0.43's ExtractSessionInfo priority for the
 // explicit session sources supported by Wick.
 func requestSession(req pluginapi.RequestInterceptRequest) string {
 	if session := sessionHeaderValue(req.Headers, sessionHeader); session != "" {
@@ -41,8 +41,8 @@ func requestSession(req pluginapi.RequestInterceptRequest) string {
 	}
 	// CPA also accepts the entire user_id as a final opaque candidate when
 	// Claude metadata extraction fails, provided that container is valid.
-	// Replay has no caller scope, so a content-derived upstream identity
-	// could differ from the original request without an explicit session.
+	// Wick tracks explicit sessions only; content-derived identities are
+	// outside its conversation lifecycle.
 	return normalizeExplicitSession(rawUserID)
 }
 
@@ -175,7 +175,7 @@ func cacheIdentityKey(body []byte) string {
 		return ""
 	}
 	// Reuse billing-block exclusion without changing conversationKey itself.
-	return conversationKey("", "", "", canonical)
+	return conversationKey("", "", "", "", canonical)
 }
 
 func forEachCacheBlock(body []byte, visit func(gjson.Result)) {

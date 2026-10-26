@@ -16,6 +16,8 @@ import (
 // keyPattern matches a conversation key, which also names its request file.
 var keyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+var errMissingCallerScope = errors.New("missing caller_scope")
+
 const (
 	// indexFile holds the schedule of every saved conversation. The request
 	// of each conversation is saved in <key>.req next to it.
@@ -71,17 +73,18 @@ type savedConversation struct {
 // savedRequest is the first line of a request file. The request body
 // follows it unchanged, so that the replay stays byte for byte the same.
 type savedRequest struct {
-	Other     bool        `json:"other,omitempty"`
-	Session   string      `json:"session"`
-	Agent     string      `json:"agent,omitempty"`
-	Key       string      `json:"key"`
-	Model     string      `json:"model"`
-	AuthID    string      `json:"auth_id"`
-	RequestID string      `json:"request_id"`
-	Client    string      `json:"client,omitempty"`
-	Cwd       string      `json:"cwd,omitempty"`
-	Prompt    string      `json:"prompt,omitempty"`
-	Headers   http.Header `json:"headers"`
+	CallerScope string      `json:"caller_scope"`
+	Other       bool        `json:"other,omitempty"`
+	Session     string      `json:"session"`
+	Agent       string      `json:"agent,omitempty"`
+	Key         string      `json:"key"`
+	Model       string      `json:"model"`
+	AuthID      string      `json:"auth_id"`
+	RequestID   string      `json:"request_id"`
+	Client      string      `json:"client,omitempty"`
+	Cwd         string      `json:"cwd,omitempty"`
+	Prompt      string      `json:"prompt,omitempty"`
+	Headers     http.Header `json:"headers"`
 }
 
 func newConvStore(m *Manager, dir string) *convStore {
@@ -223,17 +226,18 @@ func (s *convStore) write(convs []savedConversation) error {
 
 func encodeRequest(req request) []byte {
 	head, _ := json.Marshal(savedRequest{
-		Other:     req.Other,
-		Session:   req.Session,
-		Agent:     req.Agent,
-		Key:       req.Key,
-		Model:     req.Model,
-		AuthID:    req.AuthID,
-		RequestID: req.RequestID,
-		Client:    req.Client,
-		Cwd:       req.Cwd,
-		Prompt:    req.Prompt,
-		Headers:   req.Headers,
+		CallerScope: req.CallerScope,
+		Other:       req.Other,
+		Session:     req.Session,
+		Agent:       req.Agent,
+		Key:         req.Key,
+		Model:       req.Model,
+		AuthID:      req.AuthID,
+		RequestID:   req.RequestID,
+		Client:      req.Client,
+		Cwd:         req.Cwd,
+		Prompt:      req.Prompt,
+		Headers:     req.Headers,
 	})
 	out := make([]byte, 0, len(head)+1+len(req.Body))
 	out = append(out, head...)
@@ -246,23 +250,31 @@ func decodeRequest(raw []byte) (request, error) {
 	if !ok {
 		return request{}, errors.New("no request body")
 	}
-	var saved savedRequest
+	// A pointer distinguishes legacy records from an explicitly empty scope.
+	var saved struct {
+		savedRequest
+		CallerScope *string `json:"caller_scope"`
+	}
 	if err := json.Unmarshal(head, &saved); err != nil {
 		return request{}, err
 	}
+	if saved.CallerScope == nil {
+		return request{}, errMissingCallerScope
+	}
 	return request{
-		Other:     saved.Other,
-		Session:   saved.Session,
-		Agent:     saved.Agent,
-		Key:       saved.Key,
-		Model:     saved.Model,
-		AuthID:    saved.AuthID,
-		RequestID: saved.RequestID,
-		Client:    saved.Client,
-		Cwd:       saved.Cwd,
-		Prompt:    saved.Prompt,
-		Headers:   saved.Headers,
-		Body:      body,
+		CallerScope: *saved.CallerScope,
+		Other:       saved.Other,
+		Session:     saved.Session,
+		Agent:       saved.Agent,
+		Key:         saved.Key,
+		Model:       saved.Model,
+		AuthID:      saved.AuthID,
+		RequestID:   saved.RequestID,
+		Client:      saved.Client,
+		Cwd:         saved.Cwd,
+		Prompt:      saved.Prompt,
+		Headers:     saved.Headers,
+		Body:        body,
 	}, nil
 }
 
@@ -293,9 +305,23 @@ func (m *Manager) restoreLocked() {
 		return
 	}
 	now := m.clock.Now()
-	expired := 0
+	expired, legacy := 0, 0
 	for _, sc := range index.Conversations {
 		if _, ok := m.convs[sc.Key]; ok || len(m.convs) >= maxConversations || !keyPattern.MatchString(sc.Key) {
+			continue
+		}
+		file, err := os.ReadFile(filepath.Join(s.dir, sc.Key+requestExt))
+		if err != nil {
+			m.host.Log("warn", "wick: read saved conversation: "+err.Error(), nil)
+			continue
+		}
+		req, err := decodeRequest(file)
+		if errors.Is(err, errMissingCallerScope) {
+			legacy++
+			continue
+		}
+		if err != nil || req.Key != sc.Key {
+			m.host.Log("warn", "wick: invalid saved conversation "+short(sc.Key), nil)
 			continue
 		}
 		earliest, latest := now.Add(restoreDelay), sc.LastRead.Add(cacheTTL-restoreMargin)
@@ -310,16 +336,6 @@ func (m *Manager) restoreLocked() {
 		// interval_max can be up to 299 s, later than restoreMargin allows.
 		if at.After(latest) {
 			at = latest
-		}
-		file, err := os.ReadFile(filepath.Join(s.dir, sc.Key+requestExt))
-		if err != nil {
-			m.host.Log("warn", "wick: read saved conversation: "+err.Error(), nil)
-			continue
-		}
-		req, err := decodeRequest(file)
-		if err != nil || req.Key != sc.Key {
-			m.host.Log("warn", "wick: invalid saved conversation "+short(sc.Key), nil)
-			continue
 		}
 		c := &conversation{
 			req:         req,
@@ -340,6 +356,9 @@ func (m *Manager) restoreLocked() {
 		s.saved[sc.Key] = c.gen
 		m.scheduleAtLocked(sc.Key, c, at)
 		m.logLocked("info", "saved conversation restored", req, c.pings, "")
+	}
+	if legacy > 0 {
+		m.host.Log("info", fmt.Sprintf("wick: discarded %d saved conversations without caller_scope; replay identity is unknown", legacy), nil)
 	}
 	if expired > 0 {
 		m.host.Log("info", fmt.Sprintf("wick: %d saved conversations expired while Wick was not running", expired), nil)

@@ -1,7 +1,5 @@
 # 架构
 
-[English](./architecture_EN.md)
-
 本文中的“挑灯”指一次保活请求：原样重发对话的最后一个请求，读取缓存后断开。代码和日志中称为 ping。
 
 ## 模块
@@ -19,22 +17,22 @@
 
 ## 与 CPA 的接口
 
-插件注册四项能力：`request_interceptor`、`request_lifecycle_plugin`、`usage_plugin` 和 `management_api`。`go.mod` 中的 CPA SDK 为 v8.0.4，这些方法和类型在该版本中已经存在；接口行为按 CPA v8.0.39 的源码核对。
+插件注册四项能力：`request_interceptor`、`request_lifecycle_plugin`、`usage_plugin` 和 `management_api`。最低 CPA 版本和 `go.mod` 中的 SDK 版本均为 v8.0.43，接口行为按该版本源码核对。
 
 | 方法 | 用途 |
 | --- | --- |
-| `request.intercept_after` | 在 CPA 选定账号之后、执行器改写请求之前调用，带客户端原始请求体、入站请求头和 `Metadata["selected_auth_id"]`。插件记录请求；原生 Claude Code 和跳过的请求返回空对象。其他客户端符合挑灯条件时返回 `Body`，CPA 用它替换请求体和 `OriginalRequest`，挑灯保存相同字节 |
+| `request.intercept_after` | 在 CPA 选定账号之后、执行器改写请求之前调用，带客户端原始请求体、入站请求头、`CallerScope` 和 `Metadata["selected_auth_id"]`。插件记录请求；原生 Claude Code 和跳过的请求返回空对象。其他客户端符合挑灯条件时返回 `Body`，CPA 用它替换请求体和 `OriginalRequest`，挑灯保存相同字节 |
 | `request.intercept_before` | 能力要求实现，直接返回空对象 |
 | `request.complete` | 请求结束时异步调用。`Outcome` 为 `failed` 或 `rejected` 时熄灭对应对话 |
 | `usage.handle` | 请求完成后异步调用，带 `UsageRecord`。插件为它记录过的请求写一条 `request` 事件，其他请求的用量忽略，见[请求用量](#请求用量) |
-| `host.model.execute_stream` | 发送挑灯请求，`auth_id` 锁定原账号 |
+| `host.model.execute_stream` | 发送挑灯请求，`auth_id` 锁定原账号，`caller_scope` 保持调用方身份 |
 | `host.model.stream_read` / `stream_close` | 读取挑灯响应到 `message_start`，然后关闭 |
 | `host.log` | 写 CPA 日志 |
 
 注意事项：
 
 - `RequestInterceptRequest`、`RequestCompletion` 和 `UsageRecord` 没有 JSON 标签，宿主发送的字段名是 Go 字段名（如 `Body`、`Metadata`），`Body` 为 base64。解码必须使用 `pluginapi` 中的类型。
-- `request.intercept_after` 在请求的 goroutine 中同步调用，没有超时，CPA 每次换账号重试时会再调用一次。处理时只做筛选、计算对话键和描述、复制请求体，以及为符合条件的其他客户端补全 5 分钟 TTL 和 explicit 模式，保存对话由后台 goroutine 完成。请求结束了一轮挑灯时，释放锁之后向挑灯记录追加一行；出现新的对话键、且同一会话和 agent 下已有其他对话时，还要逐条比对消息（见[对话识别和描述](#对话识别和描述)）。
+- `request.intercept_after` 在请求的 goroutine 中同步调用，没有超时，CPA 每次换账号重试时会再调用一次。处理时只做筛选、计算对话键和描述、复制请求体，以及为符合条件的其他客户端补全 5 分钟 TTL 和 explicit 模式，保存对话由后台 goroutine 完成。请求结束了一轮挑灯时，释放锁之后向挑灯记录追加一行；出现新的对话键、且同一 caller scope、会话和 agent 下已有其他对话时，还要逐条比对消息（见[对话识别和描述](#对话识别和描述)）。
 - 插件自己通过 `host.model.execute_stream` 发出的请求不会再经过本插件的拦截器，其他插件（如用量统计）照常能看到它们。
 - 调用 `execute_stream` 时不传 `host_callback_id`，否则回调作用域结束时 CPA 会关闭这个流。`execute_stream` 会阻塞到第一个数据块到达，期间无法取消。
 - `stream_read` 没有超时。每次挑灯启动一个 60 秒的看门狗，到时关闭流，阻塞中的读取随之返回。
@@ -86,14 +84,14 @@
 
 ### 工具别名与重放限制
 
-`other_clients` 默认是 `false`。Claude 订阅 OAuth 账号经 CPA 的默认伪装路径时，正常请求可以写入 5 分钟缓存，但插件重放缺少调用方 API key，工具名别名不同，导致 tools 缓存前缀失配，挑灯读不到原缓存。以下条件按 CPA v8.0.39 源码核对，路径相对于 CPA 源码根目录：
+`other_clients` 默认是 `false`，其他客户端须手动开启，并满足下文的缓存标记和显式会话要求。CPA v8.0.43 通过 `CallerScope` 保持普通请求与重放的工具别名一致：
 
-- `internal/runtime/executor/claude_fingerprint_policy.go:95–118`：真正的 Claude OAuth token（凭据包含 `sk-ant-oat`），以及显式启用 `fingerprint-profile: claude-code-cli` 的 API key 或委托账号，均启用 `MCPAlias`。默认指纹的普通 API key 账号不启用此项，别名并非仅限于 OAuth。
-- `internal/runtime/executor/claude_executor_stream.go:208–210` 和 `claude_executor_execute.go:213–215`：只有 `fp.MCPAlias && cloaked` 才改写工具名。`claude_executor_cloaking.go:1681–1744` 的策略使确认的原生 Claude Code 跳过伪装；`never` / `uncloak` 模式也关闭伪装，因此不进入工具别名分支。`helps/claude_client_detection.go:140–168` 的原生确认依赖请求头和请求体，`claude_executor_cloaking.go:28–41` 可直接从重放的请求头重新识别，无需 gin 上下文。
-- `internal/runtime/executor/claude_executor_request.go:1847–1855`：别名密钥取 `helps.APIKeyFromContext`，空值退回 `cpa-claude-mcp-default-caller`。`helps/usage_helpers.go:802–820` 只从 gin 上下文的 `userApiKey` 取调用方 API key，不从重放请求头取值。普通第三方工具的别名由该密钥分配；合法 MCP 工具名和 Anthropic 服务端工具跳过重命名（`claude_executor_request.go:1934–1967`）。
-- `sdk/pluginapi/types.go:684–710` 的 `HostModelExecutionRequest` 没有调用方身份字段；`auth_id` 只锁定上游账号。Wick 的定时挑灯不携带原请求的 `host_callback_id`，宿主无法继承其 gin 上下文（`internal/pluginhost/host_model_stream_callbacks.go:26–33`）。因此保存相同请求字节、显式会话标识或 explicit 缓存模式都不能恢复别名密钥，插件无法消除该差异。
+- CPA 的 `session.CallerScope` 对去除首尾空白后的客户端 key 计算带域前缀的 SHA-256，输出不可逆的十六进制标识。相同 key 在 CPA 重启后保持相同 scope；空 key 得到空 scope，CPA 使用默认调用方身份。
+- `parseRequest` 优先取 `RequestInterceptRequest.CallerScope`，为空时取 `Metadata[pluginapi.CallerScopeMetadataKey]` 的字符串值。此步骤在 `ttl_1h` 提前返回之前完成，供清理时隔离调用方。
+- `Manager.ping` 把 scope 原样放进 `HostModelExecutionRequest.CallerScope`。CPA 的 `internal/pluginhost/host_callbacks.go` 把它传入执行上下文，`internal/runtime/executor/claude_executor_request.go` 的工具别名密钥优先取 caller scope；`auth_id` 仍只选择上游账号。
+- 经 CPA 确认的原生 Claude Code 请求跳过伪装和工具别名。其他请求仅在指纹策略启用 `MCPAlias` 且实际进行了伪装时改写工具名。
 
-手动开启仅适用于普通请求与重放的缓存前缀一致的环境，例如使用默认指纹且未启用 `claude-code-cli` 的 API key 账号，或关闭 CPA 伪装。仍须满足下文的接管条件，并验证挑灯的 `cache_read_input_tokens > 0` 且 `cache_creation_input_tokens == 0`；没有工具别名差异也不保证其他上游处理或缓存长度满足要求。经 CPA 确认的原生 Claude Code 不进入别名分支，不受调用方密钥缺失的限制。
+调用方身份一致不保证缓存一定可用：strict 伪装（`cloak_strict_mode`）等处理仍可能删除调用方 system 及其缓存标记，缓存前缀也必须达到最低长度。开启后须验证挑灯的 `cache_read_input_tokens > 0` 且 `cache_creation_input_tokens == 0`。
 
 ## 请求筛选
 
@@ -105,7 +103,7 @@
 - 能取得会话 ID（来源顺序见下文）和 `selected_auth_id`；
 - 请求体中没有 `"ttl": "1h"`。出现 1 小时缓存时，删除该对话的记录。
 
-其他客户端只有在配置时长超过 5 分钟、管理器运行中并通过上述条件后才可能返回改写的 `Body`。`pinCacheTTL` 遍历位置与 CPA v8.0.39 的 `forEachClaudeCacheControlBlock` 相同：`tools[]`、`system[]`、`messages[].content[]`；只接受对象形式、`type` 为 `ephemeral` 的 `cache_control`，不递归查找嵌套内容。接管还须同时满足：
+其他客户端只有在配置时长超过 5 分钟、管理器运行中并通过上述条件后才可能返回改写的 `Body`。`pinCacheTTL` 遍历位置与 CPA v8.0.43 的 `forEachClaudeCacheControlBlock` 相同：`tools[]`、`system[]`、`messages[].content[]`；只接受对象形式、`type` 为 `ephemeral` 的 `cache_control`，不递归查找嵌套内容。接管还须同时满足：
 
 - 合法标记总数为 1～4，且所有标记都没有 `ttl` 字段。
 - `prompt_cache_options` 缺省或为对象；对象的 `mode` 缺省或为字符串 `explicit`，判断与 CPA 一致，忽略大小写及首尾空白。
@@ -118,23 +116,23 @@ CPA 的 explicit 模式保留仍在请求中的调用方 system 标记（默认 
 
 explicit 模式不能阻止 strict 伪装（`cloak_strict_mode`）等处理删除调用方 system 及其标记；最后一个缓存断点前的前缀不足最低长度时，也可能读写量均为 0。Wick 根据挑灯响应的实际缓存读写量确认续期；读取量不大于 0 或发生缓存写入时自动熄灭，避免部分缓存过期或前缀变化后反复支付写入费用。
 
-其他客户端改用显式 1 小时缓存时，只在同一会话、agent 和模型的非原生记录中查找旧对话。`cacheIdentityKey` 结构化比较 `tools` 和 `system`，忽略对象键顺序和空白；只在 `tools[]`、`system[]` 的直接 `cache_control` 对象中，将 `type: "ephemeral"` 标记的缺省、`5m` 和 `1h` TTL 视为等价。不递归处理嵌套标记；其他值（包括 `null`、自定义 TTL 和标记的其他字段）、数组顺序和数值表示仍参与匹配，计费块沿用对话键的排除规则。这份 identity 只用于删除匹配记录，不改变已保存的对话键、会话哈希或发给 CPA、保存和重放的请求字节，也不匹配原生记录。原生请求仍按原始对话键查找。
+其他客户端改用显式 1 小时缓存时，只在同一 caller scope、会话、agent 和模型的非原生记录中查找旧对话。`cacheIdentityKey` 结构化比较 `tools` 和 `system`，忽略对象键顺序和空白；只在 `tools[]`、`system[]` 的直接 `cache_control` 对象中，将 `type: "ephemeral"` 标记的缺省、`5m` 和 `1h` TTL 视为等价。不递归处理嵌套标记；其他值（包括 `null`、自定义 TTL 和标记的其他字段）、数组顺序和数值表示仍参与匹配，计费块沿用对话键的排除规则。这份 identity 只用于删除匹配记录，不改变已保存的对话键、会话哈希或发给 CPA、保存和重放的请求字节，也不匹配原生记录。原生请求仍按原始对话键查找。
 
-`request.Other` 标记非原生请求，并保存在 `.req` 元数据的 `other` 中；旧文件缺失时为 `false`，对应原生请求。关闭 `other_clients` 时立即删除这些对话，恢复时也跳过它们，不影响原生对话。
+`request.Other` 标记非原生请求，并保存在 `.req` 元数据的 `other` 中；缺省时为 `false`，对应原生请求。关闭 `other_clients` 时立即删除这些对话，恢复时也跳过它们，不影响原生对话。
 
 ## 对话识别和描述
 
-会话 ID 在 Wick 支持的来源中按 CPA v8.0.39 的顺序取第一个有效值：`X-Claude-Code-Session-Id` → Claude 格式 `metadata.user_id` 中提取的会话 ID → `Session-Id` → `X-Session-Id` → `X-Session-Affinity` → 普通 `metadata.user_id`。候选值先检查控制字符，再去除首尾空白；含 Unicode 控制字符、去除空白后为空或超过 256 字节的值无效。请求头名称忽略大小写，同一请求头的多个值依次校验。原生 Claude Code 的合法会话头始终优先。
+会话 ID 在 Wick 支持的来源中按 CPA v8.0.43 的顺序取第一个有效值：`X-Claude-Code-Session-Id` → Claude 格式 `metadata.user_id` 中提取的会话 ID → `Session-Id` → `X-Session-Id` → `X-Session-Affinity` → 普通 `metadata.user_id`。候选值先检查控制字符，再去除首尾空白；含 Unicode 控制字符、去除空白后为空或超过 256 字节的值无效。请求头名称忽略大小写，同一请求头的多个值依次校验。原生 Claude Code 的合法会话头始终优先。
 
 Claude metadata 的解析与 CPA 的 `ClaudeMetadataIdentities` 一致：以 `{` 开头时取内层 `session_id`，旧式字符串取结尾 `_session_([a-f0-9-]+)` 捕获的部分，再对提取值校验；外层 metadata 长度不限制合法的内层会话 ID。提取失败后，整个 `metadata.user_id` 仍可作为末位不透明候选，但须通过同一校验。没有有效标识时，以 `no_session` 原样放行，不返回 `Body`，不记录对话或安排挑灯。pi 可启用 `compat.sendSessionAffinityHeaders`；pi-endpoints 0.2.13 及以上版本对 Anthropic 模型默认发送 `x-session-affinity`。
 
-CPA 的 `sdk/cliproxy/session/identity.go` 在有显式会话信号时通过 `ExtractSessionInfo` 识别会话，跳过 caller scope 派生；无显式信号时，`DeriveID` 把客户端 key 对应的 caller scope 纳入身份。挑灯经 `host.model.execute_stream` 重放原请求头和请求体，但没有原 HTTP 请求的 caller scope，因此只接管有显式会话标识的请求。
+CPA 的 `sdk/cliproxy/session/identity.go` 在有显式会话信号时通过 `ExtractSessionInfo` 识别会话；无显式信号时，`DeriveID` 把 caller scope 纳入身份。Wick 只跟踪显式会话，不接管仅依靠内容派生身份的请求。挑灯同时重放原请求头、请求体和 caller scope。
 
-对话键是会话 ID、agent ID、模型、`tools` 和 `system` 的 SHA-256；其他客户端的工具和系统提示使用补全 TTL 后的字节。agent ID 只取 `X-Claude-Code-Agent-Id`，不从其他客户端字段推测。Claude Code 只在 subagent 的请求中发送 `X-Claude-Code-Agent-Id`，每个 subagent 的值不同，主对话没有这个请求头。`system` 中以 `x-anthropic-billing-header` 开头的计费块每次请求都不同，计算时跳过。同一对话前后的请求只有 `messages` 不同，键相同。
+对话键是 caller scope、会话 ID、agent ID、模型、`tools` 和 `system` 的 SHA-256；其他客户端的工具和系统提示使用补全 TTL 后的字节。agent ID 只取 `X-Claude-Code-Agent-Id`，不从其他客户端字段推测。Claude Code 只在 subagent 的请求中发送 `X-Claude-Code-Agent-Id`，每个 subagent 的值不同，主对话没有这个请求头。`system` 中以 `x-anthropic-billing-header` 开头的计费块每次请求都不同，计算时跳过。同一对话前后的请求只有 `messages` 不同，键相同。
 
-每个对话只保存最后一个请求。主对话（没有 agent ID 的请求）收到新请求时，同一会话中首次出现时间晚于主对话上一个请求的其他对话被删除：它们是主对话等待期间启动的 subagent，主对话继续说明它们已经返回。subagent 的请求不触发删除。客户端不发送 agent ID 时，所有请求都按主对话处理。pi-subagents 属于这种情况，使用 `duration_minutes`，不使用子代理时长。
+每个对话只保存最后一个请求。主对话（没有 agent ID 的请求）收到新请求时，同一 caller scope 和会话中首次出现时间晚于主对话上一个请求的其他对话被删除：它们是主对话等待期间启动的 subagent，主对话继续说明它们已经返回。subagent 的请求不触发删除。客户端不发送 agent ID 时，所有请求都按主对话处理。pi-subagents 属于这种情况，使用 `duration_minutes`，不使用子代理时长。
 
-对话键包含工具、系统提示和模型。对话中途加载 MCP 服务器或延迟加载的工具（如通过 ToolSearch 加载 WebFetch）、换了系统提示或用 `/model` 换了模型时，后续请求得到新的键。缓存按 tools → system → messages 的顺序匹配前缀，旧键的缓存再也读不到，继续挑灯只会白花钱。因此出现新键时，`replaceLocked` 检查同一会话、同一 agent ID（都为空也算相同）下的其他对话：旧请求的消息除最后一条外，与新请求开头的消息逐条原样相同（比较原始 JSON），就判定为同一对话的延续，删除旧对话，日志中的熄灭原因为 `replaced`。最后一条不比较，因为 Claude Code 会把缓存标记移到新的最后一条消息上。只有一条消息的旧对话无从比较，不删除。只看会话 ID 不够：Claude Code 的后台辅助请求也带同一个会话 ID，但不是在原对话后面续写的。只有同一会话和 agent 下已有其他对话时才解析消息，普通请求不受影响。
+对话键包含工具、系统提示和模型。对话中途加载 MCP 服务器或延迟加载的工具（如通过 ToolSearch 加载 WebFetch）、换了系统提示或用 `/model` 换了模型时，后续请求得到新的键。缓存按 tools → system → messages 的顺序匹配前缀，旧键的缓存再也读不到，继续挑灯只会白花钱。因此出现新键时，`replaceLocked` 检查同一 caller scope、同一会话、同一 agent ID（都为空也算相同）下的其他对话：旧请求的消息除最后一条外，与新请求开头的消息逐条原样相同（比较原始 JSON），就判定为同一对话的延续，删除旧对话，日志中的熄灭原因为 `replaced`。最后一条不比较，因为 Claude Code 会把缓存标记移到新的最后一条消息上。只有一条消息的旧对话无从比较，不删除。只看会话 ID 不够：Claude Code 的后台辅助请求也带同一个会话 ID，但不是在原对话后面续写的。只有同一 caller scope、会话和 agent 下已有其他对话时才解析消息，普通请求不受影响。
 
 内存中最多保存 32 个对话，超出时删除最后请求最早的一个；单独设了时长的对话最后删除。
 
@@ -155,7 +153,7 @@ CPA 的 `sdk/cliproxy/session/identity.go` 在有显式会话信号时通过 `Ex
 - 新请求让本轮次数清零，并清除单独设置的时长。`SetDuration` 拒绝会让对话立即熄灭的时长（缓存已经能保持到它，包括恢复默认时长），返回 `ErrPassed`，熄灭只能通过“熄灭”按钮。
 - 每次安排都从管理器的全局计数器取一个代数（`gen`）。计时器触发和挑灯返回时都核对代数，旧的计时器和结果不影响新的安排；对话被删除后重新出现时，进行中的旧挑灯也不会与它匹配。
 - 时长为 0 时同理：`duration_minutes` 改为 0 时清空所有对话，`subagent_duration_minutes` 改为 0 时删除所有子代理。时长为 0 的请求不记录。
-- 每次挑灯前读取 CPA 配置文件，插件被关闭时删除对话。CPA v8.0.39 在插件被关闭时卸载实例（与 `plugin.shutdown` 相同，见下文），这项检查用于卸载前的间隙和不卸载实例的 CPA 版本。
+- 每次挑灯前读取 CPA 配置文件，插件被关闭时删除对话。CPA v8.0.43 在插件被关闭时卸载实例（与 `plugin.shutdown` 相同，见下文），这项检查用于卸载前的间隙和不卸载实例的 CPA 版本。
 - `plugin.quiesce` 和 `plugin.shutdown` 先保存对话，再停止所有计时器、清空内存中的对话，并关闭进行中的挑灯流；磁盘上保存的对话供下一个实例恢复。之后的 `plugin.reconfigure` 恢复运行，并重新从磁盘恢复对话。插件被关闭后在缓存过期前重新启用，保存的对话也会恢复。
 - 从管理页面熄灭对话时，删除该对话。进行中的挑灯照常完成，返回时因找不到对话而不再安排下一次。
 - 因到达截止时间、修改配置、手动熄灭或淘汰而删除的对话，如果本轮挑过灯，`retireLocked` 把这一轮另存在 `ended` 中，保留到最后一次读取缓存后 300 秒，用来判断这段时间内的回来。挑灯未命中或失败、插件关闭、子代理结束和换键删除的对话不保留。`ended` 不保存到磁盘，重启或热更新时丢失，这期间的回来不会被记录。
@@ -213,7 +211,7 @@ v0.5.0 起每条事件都带 `returns: true`，用来区分“没有回来”和
 `internal/pricing` 读取官方定价页的 Markdown 版本 `https://platform.claude.com/docs/en/about-claude/pricing.md`：
 
 - 解析 `## Model pricing` 下的第一张表，按表头找到 Base input、5m cache writes、1h cache writes、Cache hits and refreshes 和 Output 五列，单价格式为 `$x / MTok`。
-- 模型名去掉括注，如 “([limited availability](…))”。“(for prompts up to / over 100,000 tokens)” 这类括注解析为分档价格，按输入总量（读取、写入和未缓存的输入之和）选档。显示名拆成系列和版本号，如 “Claude Opus 5.5” 的系列为 `opus`、版本为 `5.5`，ID 为 `claude-opus-5-5`。
+- 模型名去掉括注，如 `([limited availability](…))`。“(for prompts up to / over 100,000 tokens)” 这类括注解析为分档价格，按输入总量（读取、写入和未缓存的输入之和）选档。显示名拆成系列和版本号，如 “Claude Opus 5.5” 的系列为 `opus`、版本为 `5.5`，ID 为 `claude-opus-5-5`。
 - 查价格时，CPA 的模型名转为小写，去掉方括号后缀（如 `[1m]`），拆成单词和版本号。版本号取第一段连续的一两位数字，之后的日期和数字（如 Bedrock ID 末尾的 `-v1:0`）不计入；表中和模型名的版本号都去掉末尾的 `.0`，所以 `claude-opus-4-0` 对应 Claude Opus 4。版本号相同、并且包含表中系列的全部单词时匹配，所以 `-thinking` 等后缀和老型号的词序（如 `claude-3-5-haiku`）都能匹配。匹配不到的模型不计金额。
 - 只解析模型价格表。Claude Sonnet 4 和 4.5 的提示超过 200K token 时按长上下文价格计费，这部分加价不计入，金额偏低。
 - 插件加载时获取一次，成功后每 24 小时获取一次，失败后 1 小时重试；使用标准 `net/http`，超时 15 秒。成功后写入数据目录的 `prices.json`（带获取时间），插件加载时先读这个文件。获取或解析失败时沿用当前价格，在日志和页面上提示。解析出的模型少于 5 个时按失败处理，避免定价页改版后覆盖可用的价格。
@@ -228,7 +226,7 @@ v0.5.0 起每条事件都带 `returns: true`，用来区分“没有回来”和
 `internal/keepalive/persist.go` 把内存中的对话保存在 `conversations/` 下：
 
 - `index.json`：每个对话的键、首次出现时间、最后请求时间、最后一次读取缓存的时间 `last_read`、下次挑灯时间、本轮的挑灯次数、单独设置的分钟数、上次的用量。
-- `<对话键>.req`：第一行是请求的元数据（会话 ID、agent ID、非原生标记 `other`、模型、账号、请求 ID、目录、第一句话、请求头）的 JSON，之后是原样的请求体。请求体不经过 JSON 编码，重放时与原请求逐字节相同。
+- `<对话键>.req`：第一行是请求的元数据（调用方标识 `caller_scope`、会话 ID、agent ID、非原生标记 `other`、模型、账号、请求 ID、目录、第一句话、请求头）的 JSON，之后是原样的请求体。请求体不经过 JSON 编码，重放时与原请求逐字节相同。
 
 对话变化时（新请求、挑灯、设置时长、删除）管理器发出信号，后台 goroutine 等待 5 秒合并同一批变化，再在锁内取快照、在锁外写文件。请求文件只在该对话的代数变化时重写，其余变化只重写 `index.json`。写文件先写 `.tmp` 再改名；不在快照中的文件被删除；对话键必须是 64 位十六进制，否则不读取。
 
@@ -238,7 +236,10 @@ v0.5.0 起每条事件都带 `returns: true`，用来区分“没有回来”和
 
 - 下次挑灯时间不早于加载后 3 秒，给 CPA 完成插件加载留出时间；也不晚于 `last_read` 之后 290 秒（缓存有效期减去 10 秒，留给请求到达上游），`interval_max` 大于 290 时保存的时间可能更晚。
 - 如果加载后 3 秒已经晚于 `last_read` 之后 290 秒，缓存视为已过期，不恢复，下一次写入时删除其文件。
-- 恢复的对话取新的代数，次数、单独设置的分钟数和最后请求时间保持不变。
+- 恢复的对话取新的代数，次数、单独设置的分钟数和最后请求时间保持不变，重放携带保存的 caller scope。
+- 请求首行总是写入 `caller_scope`，包括空字符串。缺少该字段的旧格式记录全部丢弃，info 日志说明数量和身份未知的原因；原生和其他客户端采用相同规则。
+
+caller scope 仅用于重放和对话隔离，不输出到管理页面、status API、日志或 history 事件。
 
 ### 挑灯记录
 
@@ -254,7 +255,7 @@ v0.5.0 起每条事件都带 `returns: true`，用来区分“没有回来”和
 
 ### 环境
 
-- Go 1.26。
+- Go 1.26.10 或更新版本；Docker 构建镜像和 CI 工具链固定为 1.26.10。
 - 构建动态库需要 cgo 和目标平台的 C 编译器。`internal/` 下的包都是纯 Go，测试不需要 cgo。
 
 ### 测试
@@ -264,7 +265,7 @@ go vet ./...
 go test ./... -timeout=90s
 ```
 
-测试使用假的宿主和时钟，不发送真实请求，也不等待真实时间；持久化的测试在临时目录中直接调用写入函数，不等待后台 goroutine。覆盖内容：其他客户端默认关闭、显式开启、原生请求不受开关影响和关闭后的恢复筛选、合法缓存位置的 1～4 断点接管和逐字节 5 分钟 TTL / explicit 模式插入、保留选项其他字段、已有 TTL / 无标记 / 超过四断点 / mode 冲突时原样放行、原生请求路径不变、原请求与持久化及重放字节一致、重试稳定性、CPA 会话来源优先级与长度和控制字符校验、结构化和旧式 Claude metadata 的会话提取、无效候选后的有效值及多值请求头、五种显式会话标识的接管和重放、无有效标识时原样放行、显式 1 小时 TTL 的结构化匹配及无关对话隔离、拦截响应 `Body`、花费对比范围统计和差额视图、请求筛选和挑灯请求体（包括去掉客户端凭据）、对话键、项目目录和第一句话的提取、挑灯间隔和按时长停止、5 分钟以内不挑灯、子代理的时长（包括单独时长和 `subagent_duration_minutes: 0`）、从记录统计的累计次数、新请求重新计时、零读零写、零读有写或读写并存时熄灭且不刷新 `lastRead`、仅读取无写入时续期、缓存未命中的页面结论和错误时熄灭、subagent 的删除（包括带 agent ID 的并行 subagent）、失败和中断请求的处理、插件关闭和 `duration_minutes: 0`、过期的挑灯结果、单独时长的截止和清除、拒绝已经过去的时长、淘汰时保留单独时长的对话、对话的保存和恢复（计划保持、到期补发、晚于截止点时提前、缓存过期不恢复、停止前的最后状态、文件删除）、挑灯记录的写入、查询、按对话汇总和清理、SSE 解析、日志正文、配置校验和数据目录，手动熄灭对话，插件 RPC 的注册和拦截请求解码，管理接口和页面，换了工具后熄灭旧对话（辅助请求和其他 agent 不受影响），回来事件的判定（及时回来、过早、过晚、手动熄灭后回来、换键后不记录），轮次重建、结论和金额，请求用量的记录（按 trace ID 和请求 ID 匹配、失败后重试、超过 1 小时）和 `usage.handle` 解码，花费对比，以及定价页的解析（以 2026-10-24 的官方页面 `internal/pricing/testdata/pricing.md` 为样例）、模型名匹配和价格缓存。
+测试使用假的宿主和时钟，不发送真实请求，也不等待真实时间；持久化的测试在临时目录中直接调用写入函数，不等待后台 goroutine。覆盖内容：其他客户端默认关闭、显式开启、原生请求不受开关影响和关闭后的恢复筛选、合法缓存位置的 1～4 断点接管和逐字节 5 分钟 TTL / explicit 模式插入、保留选项其他字段、已有 TTL / 无标记 / 超过四断点 / mode 冲突时原样放行、原生请求路径不变、原请求与持久化及重放字节一致、重试稳定性、CPA 会话来源优先级与长度和控制字符校验、结构化和旧式 Claude metadata 的会话提取、无效候选后的有效值及多值请求头、五种显式会话标识的接管和重放、无有效标识时原样放行、显式 1 小时 TTL 的结构化匹配及无关对话隔离、CallerScope 字段优先级和 metadata 回退（含空 scope）、保存恢复后重放身份、旧格式丢弃及日志、不同调用方同 session 的独立计时和三处清理隔离、同调用方清理及 RPC 身份解码、拦截响应 `Body`、花费对比范围统计和差额视图、请求筛选和挑灯请求体（包括去掉客户端凭据）、对话键、项目目录和第一句话的提取、挑灯间隔和按时长停止、5 分钟以内不挑灯、子代理的时长（包括单独时长和 `subagent_duration_minutes: 0`）、从记录统计的累计次数、新请求重新计时、零读零写、零读有写或读写并存时熄灭且不刷新 `lastRead`、仅读取无写入时续期、缓存未命中的页面结论和错误时熄灭、subagent 的删除（包括带 agent ID 的并行 subagent）、失败和中断请求的处理、插件关闭和 `duration_minutes: 0`、过期的挑灯结果、单独时长的截止和清除、拒绝已经过去的时长、淘汰时保留单独时长的对话、对话的保存和恢复（计划保持、到期补发、晚于截止点时提前、缓存过期不恢复、停止前的最后状态、文件删除）、挑灯记录的写入、查询、按对话汇总和清理、SSE 解析、日志正文、配置校验和数据目录，手动熄灭对话，插件 RPC 的注册和拦截请求解码，管理接口和页面，换了工具后熄灭旧对话（辅助请求和其他 agent 不受影响），回来事件的判定（及时回来、过早、过晚、手动熄灭后回来、换键后不记录），轮次重建、结论和金额，请求用量的记录（按 trace ID 和请求 ID 匹配、失败后重试、超过 1 小时）和 `usage.handle` 解码，花费对比，以及定价页的解析（以 2026-10-24 的官方页面 `internal/pricing/testdata/pricing.md` 为样例）、模型名匹配和价格缓存。
 
 ### 构建
 
@@ -289,4 +290,4 @@ sh scripts/build.sh 0.1.0
 - 新增的 goroutine 必须有 `recover`。
 - 定价页的表格结构变化时，用新页面替换 `internal/pricing/testdata/pricing.md`，再修改解析。
 - 更换 `assets/logo.png` 时，同步生成 64 px 的 `internal/web/logo.png`，并发布新版本，页面上的图标才会更新。
-- 用户可见的行为、配置和限制写进 README（中英文同步），实现细节写进本文档（中英文同步）。
+- 用户可见的行为、配置和限制写进 README（中英文同步），实现细节写进本文档。

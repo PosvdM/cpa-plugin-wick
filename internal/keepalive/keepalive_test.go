@@ -220,9 +220,9 @@ func TestParseRequestSkips(t *testing.T) {
 }
 
 func TestConversationKeyIgnoresBillingAndMessages(t *testing.T) {
-	a := conversationKey("s", "", "m", body("main", "1"))
-	b := conversationKey("s", "", "m", body("main", "2"))
-	c := conversationKey("s", "", "m", body("subagent", "1"))
+	a := conversationKey("", "s", "", "m", body("main", "1"))
+	b := conversationKey("", "s", "", "m", body("main", "2"))
+	c := conversationKey("", "s", "", "m", body("subagent", "1"))
 	if a != b {
 		t.Fatal("key changes between turns of one conversation")
 	}
@@ -483,7 +483,7 @@ func TestWorkingDirectoryAndFirstPrompt(t *testing.T) {
 func TestSetDurationReplacesDefault(t *testing.T) {
 	m, clock, h, rec := newRecordingManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
-	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
+	key := short(conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1")))
 	if m.SetDuration(key, 25*60) == nil || !errors.Is(m.SetDuration("unknown", 60), ErrNotFound) {
 		t.Fatal("accepted an invalid duration or key")
 	}
@@ -509,7 +509,7 @@ func TestSetDurationReplacesDefault(t *testing.T) {
 func TestSetDurationRefusesPassedDuration(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
-	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
+	key := short(conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1")))
 	if !errors.Is(m.SetDuration(key, 5), ErrPassed) {
 		t.Fatal("accepted a duration the cache already lasts")
 	}
@@ -540,7 +540,7 @@ func TestSetDurationRefusesPassedDuration(t *testing.T) {
 func TestNewRequestClearsDuration(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
-	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
+	key := short(conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1")))
 	m.SetDuration(key, 480)
 	m.Observe(intercept("r2", "sess", body("main", "2")))
 	if c := m.Status().Conversations[0]; c.Minutes != 0 {
@@ -558,7 +558,7 @@ func TestNewRequestClearsDuration(t *testing.T) {
 func TestResetDurationAfterDefaultPassed(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
-	key := short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")))
+	key := short(conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1")))
 	m.SetDuration(key, 60)
 	clock.Advance(10 * time.Minute)
 	if err := m.SetDuration(key, 0); err != nil {
@@ -582,7 +582,7 @@ func TestResetDurationAfterDefaultPassed(t *testing.T) {
 func TestEvictionSparesSetDurations(t *testing.T) {
 	m, clock, _ := newTestManager(testConfig())
 	m.Observe(intercept("r0", "kept", body("main", "1")))
-	m.SetDuration(short(conversationKey("kept", "", "claude-opus-5-5", body("main", "1"))), 240)
+	m.SetDuration(short(conversationKey("", "kept", "", "claude-opus-5-5", body("main", "1"))), 240)
 	for i := 1; i <= maxConversations; i++ {
 		clock.Advance(time.Second)
 		m.Observe(intercept(fmt.Sprintf("r%d", i), fmt.Sprintf("s%d", i), body("main", "1")))
@@ -614,7 +614,7 @@ func TestSubagentDroppedWhenMainThreadResumes(t *testing.T) {
 	clock.Advance(10 * time.Second)
 	m.Observe(intercept("r4", "sess", body("main", "2")))
 	convs := m.Status().Conversations
-	if len(convs) != 1 || convs[0].Key != short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1"))) {
+	if len(convs) != 1 || convs[0].Key != short(conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1"))) {
 		t.Fatalf("conversations %+v, want only the main thread", convs)
 	}
 }
@@ -737,11 +737,11 @@ func TestStalePingAfterRecreate(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	m.mu.Lock()
-	staleGen := m.convs[conversationKey("sess", "", "claude-opus-5-5", body("main", "1"))].gen
+	staleGen := m.convs[conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1"))].gen
 	m.mu.Unlock()
 	m.Complete(pluginapi.RequestCompletion{RequestID: "r1", Outcome: pluginapi.RequestCompletionFailed})
 	m.Observe(intercept("r2", "sess", body("main", "2")))
-	m.fire(conversationKey("sess", "", "claude-opus-5-5", body("main", "1")), staleGen)
+	m.fire(conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1")), staleGen)
 	if h.pings() != 0 {
 		t.Fatal("stale timer sent a ping")
 	}
@@ -755,7 +755,7 @@ func TestStopConversation(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	m.Observe(intercept("r2", "other", body("main", "1")))
-	key := conversationKey("sess", "", "claude-opus-5-5", body("main", "1"))
+	key := conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1"))
 	if m.StopConversation("unknown") {
 		t.Fatal("stopped an unknown conversation")
 	}
@@ -794,7 +794,7 @@ func TestNewToolSnuffsOutTheOldKey(t *testing.T) {
 	// message carried the cache marker and differs.
 	m.Observe(intercept("r2", "sess", chat("main", []string{"Bash", "WebFetch"}, "a", "b", "c2", "d", "e")))
 	convs := m.Status().Conversations
-	if len(convs) != 1 || convs[0].Key != short(conversationKey("sess", "", "claude-opus-5-5", chat("main", []string{"Bash", "WebFetch"}))) {
+	if len(convs) != 1 || convs[0].Key != short(conversationKey("", "sess", "", "claude-opus-5-5", chat("main", []string{"Bash", "WebFetch"}))) {
 		t.Fatalf("conversations %+v, want only the new key", convs)
 	}
 	if last := h.logs[len(h.logs)-1]; !strings.Contains(last, "stopped=replaced") {
@@ -900,7 +900,7 @@ func TestManualStopKeepsTheRoundForAReturn(t *testing.T) {
 	m, clock, _, rec := newRecordingManager(testConfig())
 	m.Observe(intercept("r1", "sess", body("main", "1")))
 	clock.Advance(260 * time.Second)
-	m.StopConversation(short(conversationKey("sess", "", "claude-opus-5-5", body("main", "1"))))
+	m.StopConversation(short(conversationKey("", "sess", "", "claude-opus-5-5", body("main", "1"))))
 	clock.Advance(100 * time.Second)
 	m.Observe(intercept("r2", "sess", body("main", "2")))
 	if got := returns(rec); len(got) != 1 || !got[0].Saved {

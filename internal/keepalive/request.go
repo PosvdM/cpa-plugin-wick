@@ -43,11 +43,13 @@ var ttl1hPattern = regexp.MustCompile(`"ttl"\s*:\s*"1h"`)
 type request struct {
 	// Session is an explicit client session identifier.
 	Session string
+	// CallerScope is CPA's opaque caller identity, retained only for replay.
+	CallerScope string
 	// Other marks a non-native client; false also covers saved native requests.
 	Other bool
 	// Agent is the subagent ID, empty for the main conversation.
 	Agent string
-	// Key identifies one conversation: the session, the agent ID, and the
+	// Key identifies one conversation: the caller scope, session, agent ID, and the
 	// system prompt and tools, which also differ between kinds of subagent.
 	Key   string
 	Model string
@@ -96,18 +98,23 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int, other
 	if model == "" {
 		model = gjson.GetBytes(req.Body, "model").String()
 	}
+	callerScope := req.CallerScope
+	if callerScope == "" {
+		callerScope, _ = req.Metadata[pluginapi.CallerScopeMetadataKey].(string)
+	}
 	agent := strings.TrimSpace(req.Headers.Get(agentHeader))
 	out := request{
-		Session:   session,
-		Other:     !native,
-		Agent:     agent,
-		Key:       conversationKey(session, agent, model, req.Body),
-		Model:     model,
-		RequestID: req.RequestID,
-		TraceID:   req.TraceID,
-		Client:    clientEntrypoint(req.Headers.Get("User-Agent")),
-		Cwd:       workingDirectory(req.Body),
-		Prompt:    firstPrompt(req.Body),
+		Session:     session,
+		CallerScope: callerScope,
+		Other:       !native,
+		Agent:       agent,
+		Key:         conversationKey(callerScope, session, agent, model, req.Body),
+		Model:       model,
+		RequestID:   req.RequestID,
+		TraceID:     req.TraceID,
+		Client:      clientEntrypoint(req.Headers.Get("User-Agent")),
+		Cwd:         workingDirectory(req.Body),
+		Prompt:      firstPrompt(req.Body),
 	}
 	if ttl1hPattern.Match(req.Body) {
 		return out, skipTTL1h
@@ -125,7 +132,7 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int, other
 		}
 		// Hash the pinned tools and system so retries of the original body
 		// identify the same conversation.
-		out.Key = conversationKey(session, agent, model, out.Body)
+		out.Key = conversationKey(callerScope, session, agent, model, out.Body)
 	}
 	out.Headers = req.Headers.Clone()
 	// The executor sets the account's credentials itself, so the client's
@@ -136,13 +143,14 @@ func parseRequest(req pluginapi.RequestInterceptRequest, minBodyBytes int, other
 	return out, ""
 }
 
-// conversationKey hashes the session, agent ID, model, tools and system prompt.
-func conversationKey(session, agent, model string, body []byte) string {
+// conversationKey hashes the caller scope, session, agent ID, model, tools and system prompt.
+func conversationKey(callerScope, session, agent, model string, body []byte) string {
 	h := sha256.New()
 	write := func(s string) {
 		h.Write([]byte(s))
 		h.Write([]byte{0})
 	}
+	write(callerScope)
 	write(session)
 	write(agent)
 	write(model)

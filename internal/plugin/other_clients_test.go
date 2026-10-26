@@ -33,7 +33,7 @@ func TestInterceptOtherClientBody(t *testing.T) {
 	p := New(nopHost{}, "1.0.0", "missing.yaml", t.TempDir())
 	defer p.Shutdown()
 	p.Handle("plugin.register", []byte(`{"config_yaml":"bWluX2JvZHlfa2I6IDAK"}`))
-	in := pluginapi.RequestInterceptRequest{RequestID: "pi-request", SourceFormat: "claude", Stream: true,
+	in := pluginapi.RequestInterceptRequest{RequestID: "pi-request", CallerScope: "caller-a", SourceFormat: "claude", Stream: true,
 		Headers:  http.Header{"User-Agent": {"pi (win32 10.0.26100; x64)"}, "X-Session-Affinity": {"pi-session"}},
 		Body:     []byte(`{ "model":"claude-opus-5-5", "system":[{"text":"system","cache_control":{"type":"ephemeral"}}], "messages":[{"role":"user","content":"hi"}] }`),
 		Metadata: map[string]any{"selected_auth_id": "claude-a.json"}}
@@ -54,6 +54,20 @@ func TestInterceptOtherClientBody(t *testing.T) {
 	}
 	if convs := p.manager.Status().Conversations; len(convs) != 1 || convs[0].Client != "pi" || convs[0].Session != "pi-session" {
 		t.Fatalf("tracked %+v", convs)
+	}
+	// Distinct caller scopes decoded through RPC must retain separate requests.
+	in.CallerScope = "caller-b"
+	second, _ := json.Marshal(in)
+	decode(t, p.Handle("request.intercept_after", second))
+	if len(p.manager.Status().Conversations) != 2 {
+		t.Fatal("RPC caller scope was lost")
+	}
+	in.CallerScope = ""
+	in.Metadata[pluginapi.CallerScopeMetadataKey] = "caller-c"
+	third, _ := json.Marshal(in)
+	decode(t, p.Handle("request.intercept_after", third))
+	if len(p.manager.Status().Conversations) != 3 {
+		t.Fatal("RPC metadata caller scope was lost")
 	}
 	// The registered field is boolean; reconfiguration stops tracked clients.
 	reg := p.registration()
