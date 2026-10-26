@@ -16,8 +16,6 @@ import (
 // keyPattern matches a conversation key, which also names its request file.
 var keyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-var errMissingCallerScope = errors.New("missing caller_scope")
-
 const (
 	// indexFile holds the schedule of every saved conversation. The request
 	// of each conversation is saved in <key>.req next to it.
@@ -250,19 +248,12 @@ func decodeRequest(raw []byte) (request, error) {
 	if !ok {
 		return request{}, errors.New("no request body")
 	}
-	// A pointer distinguishes legacy records from an explicitly empty scope.
-	var saved struct {
-		savedRequest
-		CallerScope *string `json:"caller_scope"`
-	}
+	var saved savedRequest
 	if err := json.Unmarshal(head, &saved); err != nil {
 		return request{}, err
 	}
-	if saved.CallerScope == nil {
-		return request{}, errMissingCallerScope
-	}
 	return request{
-		CallerScope: *saved.CallerScope,
+		CallerScope: saved.CallerScope,
 		Other:       saved.Other,
 		Session:     saved.Session,
 		Agent:       saved.Agent,
@@ -305,7 +296,7 @@ func (m *Manager) restoreLocked() {
 		return
 	}
 	now := m.clock.Now()
-	expired, legacy := 0, 0
+	expired := 0
 	for _, sc := range index.Conversations {
 		if _, ok := m.convs[sc.Key]; ok || len(m.convs) >= maxConversations || !keyPattern.MatchString(sc.Key) {
 			continue
@@ -316,10 +307,6 @@ func (m *Manager) restoreLocked() {
 			continue
 		}
 		req, err := decodeRequest(file)
-		if errors.Is(err, errMissingCallerScope) {
-			legacy++
-			continue
-		}
 		if err != nil || req.Key != sc.Key {
 			m.host.Log("warn", "wick: invalid saved conversation "+short(sc.Key), nil)
 			continue
@@ -356,9 +343,6 @@ func (m *Manager) restoreLocked() {
 		s.saved[sc.Key] = c.gen
 		m.scheduleAtLocked(sc.Key, c, at)
 		m.logLocked("info", "saved conversation restored", req, c.pings, "")
-	}
-	if legacy > 0 {
-		m.host.Log("info", fmt.Sprintf("wick: discarded %d saved conversations without caller_scope; replay identity is unknown", legacy), nil)
 	}
 	if expired > 0 {
 		m.host.Log("info", fmt.Sprintf("wick: %d saved conversations expired while Wick was not running", expired), nil)

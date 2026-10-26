@@ -151,7 +151,7 @@
       hour_breakdown: "缓存按 1 小时写入价和读取价计算，不挑灯",
       cost_pings: "挑灯 {0} 次", cost_rounds: "{0} 轮", cost_saved: "{0} 轮等到你回来", cost_wasted: "{0} 轮白挑", cost_pending: "{0} 轮挑灯中",
       pending_note: "待定轮次的挑灯花费已计入；缓存过期或请求回来后确定结果。",
-      coverage_note: "实际统计自 {0} 起。请求用量从 v0.6.0 起记录，较早数据无法用于完整花费对比。",
+      coverage_note: "实际统计自 {0} 起。",
       compare_unpriced: "{0} 个请求或轮次没有模型价格，不计入金额。",
       other_clients: "其他客户端", other_clients_hint: "默认关闭。为 pi 等其他客户端挑灯，请求须带显式会话标识和缓存标记，条件见 README。开启后请确认挑灯读到了缓存、没有写入缓存。关闭后停止这些挑灯，请求原样交给 CPA。",
       n_pings: "{0} 次", n_ping: "{0} 次", n_rounds: "{0} 轮", n_round: "{0} 轮",
@@ -224,7 +224,7 @@
       hour_breakdown: "Cache at 1-hour write and read prices, without pings",
       cost_pings: "{0} pings", cost_rounds: "{0} rounds", cost_saved: "{0} rounds you returned to", cost_wasted: "{0} wasted rounds", cost_pending: "{0} rounds still lit",
       pending_note: "Pending rounds include their ping costs; results settle when the cache expires or a request returns.",
-      coverage_note: "Actual coverage starts {0}. Request usage is recorded from v0.6.0; older data cannot support the full cost comparison.",
+      coverage_note: "Actual coverage starts {0}.",
       compare_unpriced: "{0} requests or rounds have no model price and are excluded from amounts.",
       other_clients: "Other clients", other_clients_hint: "Off by default. Keeps pi and other clients lit when their requests carry an explicit session ID and cache markers; the README lists the conditions. After turning it on, check that pings read the cache and write none. Turning it off stops their pings and passes their requests to CPA unchanged.",
       n_pings: "{0} pings", n_ping: "{0} ping", n_rounds: "{0} rounds", n_round: "{0} round",
@@ -666,8 +666,7 @@
   }
 
   // Round results, in the order their badges are shown, with the badge
-  // style of each. Rounds recorded before returns were recorded have the
-  // result "unknown" and no badge.
+  // style of each.
   var RESULTS = [["saved", "success"], ["pending", "muted"], ["wasted", "warning"], ["miss", "warning"], ["failed", "failure"]];
   var RESULT_KIND = {};
   RESULTS.forEach(function (r) { RESULT_KIND[r[0]] = r[1]; });
@@ -675,18 +674,17 @@
   // Conversations of the history whose rounds are shown, by key.
   var expanded = {};
 
-  function historyId(c) { return c.key || "session:" + c.session; }
+  function historyId(c) { return c.key; }
 
   // Amounts are shown once prices were fetched, for conversations with a
-  // round that has a result and a price.
+  // priced round.
   function pricesReady(data) {
     data = data || historyData;
     return !!(data && data.prices && parseTime(data.prices.fetched));
   }
 
   function pricedRounds(t) {
-    var results = t.results || {};
-    return (t.rounds || 0) - (results.unknown || 0) - (t.unpriced || 0);
+    return (t.rounds || 0) - (t.unpriced || 0);
   }
 
   // The rounds of a conversation by result: a badge for each result, with
@@ -705,7 +703,6 @@
   }
 
   function roundResult(r) {
-    if (!RESULT_KIND[r.result]) return [];
     var text = r.result === "saved" && r.saved !== undefined && r.saved !== null
       ? translate("result_saved_amount", fmtMoney(r.saved))
       : translate("result_" + r.result);

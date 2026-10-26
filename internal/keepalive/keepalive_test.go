@@ -841,11 +841,6 @@ func TestReturnAfterDurationSaves(t *testing.T) {
 	if n := len(m.Status().Conversations); n != 0 {
 		t.Fatalf("conversations %d after the duration", n)
 	}
-	for _, ev := range rec.all() {
-		if !ev.Returns {
-			t.Fatalf("ping without Returns: %+v", ev)
-		}
-	}
 	clock.Advance(200 * time.Second)
 	m.Observe(intercept("r2", "sess", body("main", "2")))
 	got := returns(rec)

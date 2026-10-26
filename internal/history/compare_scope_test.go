@@ -14,7 +14,7 @@ func TestCompareScopedCountsAndViews(t *testing.T) {
 	prices := &pricing.Table{Models: []pricing.Model{{Family: "opus", Version: "5.5", Tiers: []pricing.Tier{{Rates: pricing.Rates{Input: 4, Write5m: 5, Write1h: 8, Read: 0.2}}}}}}
 	hit := &keepalive.Usage{CacheReadTokens: 100000}
 	ping := func(key string, min, n int) keepalive.Event {
-		return keepalive.Event{Key: key, Time: at(min), Model: "claude-opus-5-5", Ping: n, Usage: hit, Returns: true}
+		return keepalive.Event{Key: key, Time: at(min), Model: "claude-opus-5-5", Ping: n, Usage: hit}
 	}
 	events := []keepalive.Event{
 		ping("old", -50, 1),
@@ -23,13 +23,12 @@ func TestCompareScopedCountsAndViews(t *testing.T) {
 		{Key: "cross", Time: at(-30), Kind: keepalive.KindReturn, Saved: true, Context: 100000, Idle: 600},
 		{Key: "request", Time: at(-30), Kind: keepalive.KindRequest, Model: "claude-opus-5-5", Usage: hit},
 		ping("failed", -20, 1),
-		{Key: "failed", Time: at(-19), Model: "claude-opus-5-5", Ping: 2, Error: "boom", Returns: true},
-		{Key: "unknown", Time: at(-18), Model: "claude-opus-5-5", Ping: 1, Usage: hit},
-		{Key: "unpriced", Time: at(-10), Model: "missing", Ping: 1, Usage: hit, Returns: true},
+		{Key: "failed", Time: at(-19), Model: "claude-opus-5-5", Ping: 2, Error: "boom"},
+		{Key: "unpriced", Time: at(-10), Model: "missing", Ping: 1, Usage: hit},
 		ping("pending", -1, 1),
 	}
 	got := Compare(events, Group(events, now, prices), prices)
-	if got.PingCount != 6 || got.Rounds != 5 || got.Failed != 1 || got.Unpriced != 1 || got.Results[ResultSaved] != 1 || got.Results[ResultFailed] != 1 || got.Results[ResultUnknown] != 1 || got.Results[ResultWasted] != 1 || got.Results[ResultPending] != 1 {
+	if got.PingCount != 5 || got.Rounds != 4 || got.Failed != 1 || got.Unpriced != 1 || got.Results[ResultSaved] != 1 || got.Results[ResultFailed] != 1 || got.Results[ResultWasted] != 1 || got.Results[ResultPending] != 1 {
 		t.Fatalf("scope: %+v", got)
 	}
 	if !near(got.Wick, got.Cache+got.Pings) || !near(got.None, got.Cache+got.Saved) || !near(got.Difference, got.Saved-got.Pings) || !near(got.HourDifference, got.Hour-got.Wick) || got.Percent == nil || !near(*got.Percent, got.Difference/got.None*100) {

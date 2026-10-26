@@ -30,8 +30,8 @@ func HostConfigPath(args []string, workDir string) string {
 }
 
 // PluginEnabled reports whether the CPA config enables plugins and this
-// plugin. CPA keeps a disabled plugin loaded without notifying it, so the
-// plugin checks the flag itself before each ping.
+// plugin. Checking before each ping covers the interval between disabling
+// the plugin and CPA unloading it.
 func PluginEnabled(raw []byte) (bool, error) {
 	var cfg struct {
 		Plugins struct {

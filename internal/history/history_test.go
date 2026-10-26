@@ -78,10 +78,9 @@ func TestGroup(t *testing.T) {
 		{Time: now.Add(time.Minute), Key: "b", Session: "s", Ping: 1, Error: "boom", Stopped: "error"},
 		{Time: now.Add(5 * time.Minute), Key: "a", Session: "s", Model: "m2", Ping: 2, Usage: &keepalive.Usage{CacheReadTokens: 120, InputTokens: 3}},
 		{Time: now.Add(9 * time.Minute), Key: "a", Session: "s", Model: "m2", Ping: 1, Usage: &keepalive.Usage{CacheReadTokens: 10, CacheCreationTokens: 130, InputTokens: 1}, Stopped: "cache_miss"},
-		{Time: now.Add(2 * time.Minute), Session: "old"},
 	}
 	got := Group(events, now.Add(time.Hour), nil)
-	if len(got) != 3 || got[0].Key != "a" || got[1].Session != "old" || got[2].Key != "b" {
+	if len(got) != 2 || got[0].Key != "a" || got[1].Key != "b" {
 		t.Fatalf("groups %+v", got)
 	}
 	a := got[0]
@@ -89,11 +88,11 @@ func TestGroup(t *testing.T) {
 		a.Context != 141 || a.Model != "m2" || !a.First.Equal(now) || !a.Last.Equal(now.Add(9*time.Minute)) || a.LastStopped != "cache_miss" {
 		t.Fatalf("conversation a %+v", a)
 	}
-	// Written before returns were recorded, so the first round is unknown.
-	if r := a.Totals.Results; r[ResultMiss] != 1 || r[ResultUnknown] != 1 {
+	// A round with no return is wasted once its cache expires.
+	if r := a.Totals.Results; r[ResultMiss] != 1 || r[ResultWasted] != 1 {
 		t.Fatalf("results %v", r)
 	}
-	if b := got[2]; b.Failed != 1 || b.LastError != "boom" || b.Context != 0 || b.Totals.Results[ResultFailed] != 1 {
+	if b := got[1]; b.Failed != 1 || b.LastError != "boom" || b.Context != 0 || b.Totals.Results[ResultFailed] != 1 {
 		t.Fatalf("conversation b %+v", b)
 	}
 }
@@ -103,10 +102,10 @@ func TestRoundsAndAmounts(t *testing.T) {
 	at := func(minutes int) time.Time { return now.Add(time.Duration(minutes) * time.Minute) }
 	hit := &keepalive.Usage{CacheReadTokens: 100000}
 	ping := func(minutes, n int, usage *keepalive.Usage) keepalive.Event {
-		return keepalive.Event{Time: at(minutes), Key: "a", Model: "claude-opus-5-5", Ping: n, Usage: usage, Returns: true}
+		return keepalive.Event{Time: at(minutes), Key: "a", Model: "claude-opus-5-5", Ping: n, Usage: usage}
 	}
 	back := func(minutes int, saved bool) keepalive.Event {
-		return keepalive.Event{Time: at(minutes), Key: "a", Kind: keepalive.KindReturn, Returns: true, Saved: saved, Context: 100000, Idle: 600}
+		return keepalive.Event{Time: at(minutes), Key: "a", Kind: keepalive.KindReturn, Saved: saved, Context: 100000, Idle: 600}
 	}
 	events := []keepalive.Event{
 		// Saved: back within the cache's lifetime after the last ping.
@@ -122,7 +121,7 @@ func TestRoundsAndAmounts(t *testing.T) {
 		// A return without a ping of its round in the range is left out.
 		{Time: at(-1), Key: "z", Kind: keepalive.KindReturn, Saved: true},
 		// No price for the model.
-		{Time: at(-20), Key: "b", Model: "gpt-5", Ping: 1, Usage: hit, Returns: true},
+		{Time: at(-20), Key: "b", Model: "gpt-5", Ping: 1, Usage: hit},
 	}
 	prices := &pricing.Table{Models: []pricing.Model{{Family: "opus", Version: "5.5", Tiers: []pricing.Tier{{Rates: pricing.Rates{Input: 4, Write5m: 5, Write1h: 8, Read: 0.2, Output: 20}}}}}}
 	got := Group(events, now, prices)
@@ -163,7 +162,7 @@ func TestRoundsAndAmounts(t *testing.T) {
 	}
 	// A ping in flight when the request came back may fail after the
 	// return; the return decides.
-	late := []keepalive.Event{ping(-20, 1, hit), {Time: at(-18), Key: "a", Model: "claude-opus-5-5", Ping: 2, Error: "boom", Returns: true}, back(-17, true)}
+	late := []keepalive.Event{ping(-20, 1, hit), {Time: at(-18), Key: "a", Model: "claude-opus-5-5", Ping: 2, Error: "boom"}, back(-17, true)}
 	if r := Group(late, now, prices)[0].Detail[0]; r.Result != ResultSaved || r.Pings != 2 {
 		t.Fatalf("round with a failed ping in flight %+v", r)
 	}
@@ -184,7 +183,7 @@ func TestRoundCacheReadAndWriteResult(t *testing.T) {
 		{"recorded-miss", "cache_miss", ResultMiss, 40000, 5000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			events := []keepalive.Event{{Time: now.Add(-time.Minute), Key: "a", Ping: 1, Returns: true, Stopped: tc.stopped,
+			events := []keepalive.Event{{Time: now.Add(-time.Minute), Key: "a", Ping: 1, Stopped: tc.stopped,
 				Usage: &keepalive.Usage{CacheReadTokens: tc.read, CacheCreationTokens: tc.write, InputTokens: 3}}}
 			got := Group(events, now, nil)
 			if len(got) != 1 || len(got[0].Detail) != 1 || got[0].Detail[0].Result != tc.want {
@@ -207,9 +206,9 @@ func TestCompare(t *testing.T) {
 	events := []keepalive.Event{
 		// A round that ended before the first request with usage is left
 		// out; one that ended after it counts, though it started before.
-		{Time: at(-120), Key: "a", Model: "claude-opus-5-5", Ping: 1, Usage: hit, Returns: true},
-		{Time: at(-104), Key: "c", Model: "claude-opus-5-5", Ping: 1, Usage: hit, Returns: true},
-		{Time: at(-99), Key: "c", Kind: keepalive.KindReturn, Returns: true, Saved: true, Context: 100000, Idle: 600},
+		{Time: at(-120), Key: "a", Model: "claude-opus-5-5", Ping: 1, Usage: hit},
+		{Time: at(-104), Key: "c", Model: "claude-opus-5-5", Ping: 1, Usage: hit},
+		{Time: at(-99), Key: "c", Kind: keepalive.KindReturn, Saved: true, Context: 100000, Idle: 600},
 		// A new conversation writes everything either way.
 		request(-100, 0, 0, 0, 100000),
 		// Back after 10 minutes: the 5-minute cache expired, the 1-hour
@@ -219,8 +218,8 @@ func TestCompare(t *testing.T) {
 		request(-80, 120, 110000, 110000, 5000),
 		// Kept lit for more than an hour: saved here, a write with a
 		// 1-hour cache.
-		{Time: at(-20), Key: "a", Model: "claude-opus-5-5", Ping: 1, Usage: hit, Returns: true},
-		{Time: at(-18), Key: "a", Kind: keepalive.KindReturn, Returns: true, Saved: true, Context: 100000, Idle: 4000},
+		{Time: at(-20), Key: "a", Model: "claude-opus-5-5", Ping: 1, Usage: hit},
+		{Time: at(-18), Key: "a", Kind: keepalive.KindReturn, Saved: true, Context: 100000, Idle: 4000},
 		request(-18, 0, 0, 100000, 0),
 		{Time: at(-10), Key: "b", Model: "gpt-5", Kind: keepalive.KindRequest, Usage: hit},
 	}

@@ -106,43 +106,6 @@ func TestCallerScopeRestore(t *testing.T) {
 	}
 }
 
-func TestRestoreDiscardsLegacyCallerScope(t *testing.T) {
-	dir := t.TempDir()
-	m, _, _ := newTestManager(otherClientsConfig())
-	m.SetStore(dir)
-	m.Observe(intercept("native", "native", body("main", "1")))
-	m.Observe(otherRequest(body("other", "1")))
-	m.Stop()
-	files, _ := filepath.Glob(filepath.Join(dir, "*.req"))
-	for _, file := range files {
-		raw, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw = bytes.Replace(raw, []byte(`"caller_scope":"",`), nil, 1)
-		if err := os.WriteFile(file, raw, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	m2, clock, h := restoredManager(dir, start.Add(time.Minute))
-	defer m2.Stop()
-	if len(m2.Status().Conversations) != 0 {
-		t.Fatal("legacy requests restored")
-	}
-	clock.Advance(260 * time.Second)
-	if h.pings() != 0 {
-		t.Fatal("legacy requests replayed")
-	}
-	if !strings.Contains(strings.Join(h.logs, "\n"), "info wick: discarded 2 saved conversations without caller_scope; replay identity is unknown") {
-		t.Fatalf("logs %v", h.logs)
-	}
-	saveNow(t, m2)
-	files, _ = filepath.Glob(filepath.Join(dir, "*.req"))
-	if len(files) != 0 {
-		t.Fatalf("legacy files retained %v", files)
-	}
-}
-
 func TestCallerScopeConversationsDoNotOverwrite(t *testing.T) {
 	m, clock, h := newTestManager(testConfig())
 	defer m.Stop()

@@ -71,9 +71,9 @@ func New(h host.Host, version, hostConfigPath, workDir string) *Plugin {
 	}
 }
 
-// enabledInHostConfig reads the enabled flags from the CPA config. When the
-// file cannot be read it assumes the plugin is enabled, because CPA would not
-// call a disabled plugin's interceptor in the first place.
+// enabledInHostConfig reads the enabled flags from the CPA config to prevent
+// pings between disabling the plugin and unloading it. If the file cannot be
+// read or parsed, it assumes the plugin is enabled; CPA controls its lifecycle.
 func enabledInHostConfig(path string) bool {
 	raw, err := os.ReadFile(path)
 	if err != nil {

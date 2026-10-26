@@ -160,9 +160,6 @@ type Event struct {
 	Error   string    `json:"error,omitempty"`
 	Stopped string    `json:"stopped,omitempty"`
 	Kind    string    `json:"kind,omitempty"`
-	// Returns is set on every event of versions that record returns, so
-	// that a round without one can be judged as wasted.
-	Returns bool `json:"returns,omitempty"`
 	// Saved, Idle, Context and Pings describe a return: whether it came
 	// back within the cache's lifetime after the last successful ping and
 	// at least that long after the previous request, the seconds since
@@ -455,7 +452,6 @@ func (m *Manager) returnLocked(req request, now time.Time, r round) Event {
 		Cwd:     req.Cwd,
 		Prompt:  truncate(req.Prompt, maxEventPromptRunes),
 		Kind:    KindReturn,
-		Returns: true,
 		Saved:   saved,
 		Idle:    int64(idle / time.Second),
 		Context: r.context,
@@ -726,7 +722,6 @@ func (m *Manager) finishPing(key string, gen uint64, req request, n int, start t
 		Prompt:  truncate(req.Prompt, maxEventPromptRunes),
 		Ping:    n,
 		Usage:   usage,
-		Returns: true,
 	}
 	if start.After(m.lastEvent) {
 		m.lastEvent = start

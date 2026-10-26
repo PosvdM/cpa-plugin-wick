@@ -225,8 +225,6 @@ const (
 	// ResultMiss and ResultFailed: the last ping wrote the cache or failed.
 	ResultMiss   = "miss"
 	ResultFailed = "failed"
-	// ResultUnknown: written before returns were recorded.
-	ResultUnknown = "unknown"
 )
 
 // cacheTTL and hourTTL are how long a 5-minute and a 1-hour prompt cache
@@ -247,9 +245,8 @@ type Totals struct {
 	Results map[string]int `json:"results"`
 	// Cost is the price of the pings and Saved the cache writes saved, in
 	// US dollars at API prices. Net is Saved minus the cost of the rounds
-	// with a result, leaving out pending ones. Rounds with ResultUnknown
-	// and rounds whose model has no price are left out of all three;
-	// Unpriced counts the latter.
+	// with a result, leaving out pending ones. Rounds whose model has no
+	// price are left out of all three and counted in Unpriced.
 	Cost     float64 `json:"cost"`
 	Saved    float64 `json:"saved"`
 	Net      float64 `json:"net"`
@@ -264,9 +261,6 @@ func (t *Totals) addRound(r Round, priced bool) {
 		t.Results = make(map[string]int)
 	}
 	t.Results[r.Result]++
-	if r.Result == ResultUnknown {
-		return
-	}
 	if r.Cost == nil {
 		if priced {
 			t.Unpriced++
@@ -337,7 +331,6 @@ type Round struct {
 	// last is the outcome of the last ping: empty for a hit, ResultMiss or
 	// ResultFailed.
 	last     string
-	judged   bool
 	returned bool
 	saved    bool
 	// savedContext is the context recorded with the return.
@@ -370,8 +363,7 @@ type Conversation struct {
 
 // Group sums events, oldest first, by conversation, newest conversation
 // first, and splits each conversation into rounds, judged at now and priced
-// with prices, which may be nil. Events without a conversation key,
-// written before keys were recorded, are grouped by session.
+// with prices, which may be nil.
 //
 // A ping numbered no higher than the one before it starts a new round, as
 // does the first ping after a return, so that rounds are rebuilt from any
@@ -382,14 +374,10 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 	// open marks the conversations whose last round has no return yet.
 	open := make(map[int]bool)
 	for _, ev := range events {
-		id := ev.Key
-		if id == "" {
-			id = "session:" + ev.Session
-		}
 		if ev.Kind == keepalive.KindRequest {
 			continue
 		}
-		i, ok := index[id]
+		i, ok := index[ev.Key]
 		if ev.Kind == keepalive.KindReturn {
 			if ok && open[i] {
 				c := &out[i]
@@ -403,7 +391,7 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 		}
 		if !ok {
 			i = len(out)
-			index[id] = i
+			index[ev.Key] = i
 			out = append(out, Conversation{Key: ev.Key, Session: ev.Session, First: ev.Time})
 		}
 		c := &out[i]
@@ -415,7 +403,7 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 			open[i] = true
 		}
 		r := &c.Detail[len(c.Detail)-1]
-		r.Last, r.Model, r.lastPing, r.judged = ev.Time, ev.Model, ev.Ping, ev.Returns
+		r.Last, r.Model, r.lastPing = ev.Time, ev.Model, ev.Ping
 		r.Pings++
 		switch {
 		case ev.Error != "":
@@ -460,19 +448,14 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 // judge sets the result and the amounts of r at now.
 func (r *Round) judge(now time.Time, prices *pricing.Table) {
 	// A return comes first: a ping still in flight when the request came
-	// back may miss or fail after the return was judged. A miss can keep
-	// a saved return only if an earlier hit's cache was alive at the return.
+	// back may miss or fail after the return was judged.
 	switch {
-	case r.returned && r.saved && r.last == ResultMiss && (r.lastRead.IsZero() || !r.Return.Before(r.lastRead.Add(cacheTTL))):
-		r.Result = ResultWasted
 	case r.returned && r.saved:
 		r.Result = ResultSaved
 	case r.returned:
 		r.Result = ResultWasted
 	case r.last != "":
 		r.Result = r.last
-	case !r.judged:
-		r.Result = ResultUnknown
 	case now.Before(r.lastRead.Add(cacheTTL)):
 		r.Result = ResultPending
 	default:
@@ -584,9 +567,6 @@ func Compare(events []keepalive.Event, convs []Conversation, prices *pricing.Tab
 				out.Results = make(map[string]int)
 			}
 			out.Results[r.Result]++
-			if r.Result == ResultUnknown {
-				continue
-			}
 			if r.Cost == nil {
 				out.Unpriced++
 				continue

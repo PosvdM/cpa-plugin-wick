@@ -506,7 +506,7 @@ func TestOtherClientsDisableAndRestore(t *testing.T) {
 	if convs := restored.Status().Conversations; len(convs) != 1 || convs[0].Client != "cli" {
 		t.Fatalf("restore: %+v", convs)
 	}
-	// Old native files omit the other flag and remain eligible.
+	// Native requests omit the false other flag and remain eligible.
 	for _, c := range restored.convs {
 		file, err := os.ReadFile(filepath.Join(dir, c.req.Key+requestExt))
 		if err != nil || bytes.Contains(file, []byte(`"other":true`)) {

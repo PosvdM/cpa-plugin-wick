@@ -189,7 +189,7 @@ func TestHistoryRoute(t *testing.T) {
 	}
 	p.history.Append(keepalive.Event{Time: now.AddDate(0, 0, -3), Key: "d", Ping: 9})
 	// A return is not a ping.
-	p.history.Append(keepalive.Event{Time: now.Add(-time.Minute), Key: "a", Kind: keepalive.KindReturn, Returns: true, Pings: 1})
+	p.history.Append(keepalive.Event{Time: now.Add(-time.Minute), Key: "a", Kind: keepalive.KindReturn, Pings: 1})
 	// A request with usage is not a ping either.
 	p.history.Append(keepalive.Event{Time: now.Add(-2 * time.Minute), Key: "a", Kind: keepalive.KindRequest, Usage: &keepalive.Usage{CacheReadTokens: 10}})
 	get := func(path string, q url.Values, out any) int {

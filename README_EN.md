@@ -40,8 +40,8 @@ Wick keeps normal writes at the 5-minute price and reads the cache only while a 
 
 The pings after a request, up to the conversation's next request, make up a round. Each round ends with one of these results:
 
-- **Saved**: you came back more than 5 minutes after the previous request, when the cache would have expired without pings, and less than 5 minutes after the last successful cache read, while the cache was alive. The amount saved is the context priced at the difference between the 5-minute write price and the read price.
-- **Wasted**: the last ping read no cache, and no earlier ping in the round read a cache that was still alive when you came back; you did not come back within 5 minutes of the last successful ping; or you came back less than 5 minutes after the previous request, when the cache was alive without pings. A conversation that changed its tools, system prompt or model midway is also wasted.
+- **Saved**: you came back more than 5 minutes after the previous request, when the cache would have expired without pings, and less than 5 minutes after the last successful ping, while the cache was alive. The amount saved is the context priced at the difference between the 5-minute write price and the read price.
+- **Wasted**: you did not come back within 5 minutes of the last successful ping; or you came back less than 5 minutes after the previous request, when the cache was alive without pings. A conversation that changed its tools, system prompt or model midway is also wasted.
 - **Lit**: the last successful ping was less than 5 minutes ago, and there is no result yet.
 - **Miss** and **Failed**: the round has no return event and its last ping read no cache, wrote any cache or failed. An in-flight ping finishing after a return does not override a settled Saved or Wasted result.
 
@@ -53,7 +53,7 @@ Wick also takes the cache reads and writes of every request of these conversatio
 - **Wick**: what the requests paid for cache reads and writes, plus the cost of the pings.
 - **1-hour cache**: what the same requests would pay with a 1-hour cache and no pings. Writes are priced at the 1-hour rate; a request 5 minutes to an hour after the previous one, when the 5-minute cache had expired, reads the previous request's input instead; a request that came back more than an hour later to a cache kept lit by Wick writes the context again.
 
-Uncached input and output cost the same in all three and are left out. The comparison covers the conversations Wick keeps lit and starts from the first request with recorded usage in the range; counts, rounds and results use that same coverage. Request usage is recorded from v0.6.0, so older data cannot support the full comparison. When coverage starts later than the selected range, the page shows the actual starting date and time.
+Uncached input and output cost the same in all three and are left out. The comparison covers the conversations Wick keeps lit and starts from the first request with recorded usage in the range; counts, rounds and results use that same coverage. When coverage starts later than the selected range, the page shows the actual starting date and time.
 
 Prices come from [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing). The plugin fetches them when it loads and daily after that, and keeps the last prices when a fetch fails; models missing from the page get no amounts. Amounts are calculated at the prices current when the history is viewed, so past rounds follow price changes. Subscription usage, such as Pro, does not map exactly to API prices, so take the amounts as proportions.
 
