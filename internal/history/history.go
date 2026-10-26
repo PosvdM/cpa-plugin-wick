@@ -460,8 +460,11 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 // judge sets the result and the amounts of r at now.
 func (r *Round) judge(now time.Time, prices *pricing.Table) {
 	// A return comes first: a ping still in flight when the request came
-	// back may miss or fail after the return was judged.
+	// back may miss or fail after the return was judged. A miss can keep
+	// a saved return only if an earlier hit's cache was alive at the return.
 	switch {
+	case r.returned && r.saved && r.last == ResultMiss && (r.lastRead.IsZero() || !r.Return.Before(r.lastRead.Add(cacheTTL))):
+		r.Result = ResultWasted
 	case r.returned && r.saved:
 		r.Result = ResultSaved
 	case r.returned:

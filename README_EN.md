@@ -40,8 +40,8 @@ Wick keeps normal writes at the 5-minute price and reads the cache only while a 
 
 The pings after a request, up to the conversation's next request, make up a round. Each round ends with one of these results:
 
-- **Saved**: you came back more than 5 minutes after the previous request, when the cache would have expired without pings, and less than 5 minutes after the last successful ping, while the cache was alive. The amount saved is the context priced at the difference between the 5-minute write price and the read price.
-- **Wasted**: you did not come back within 5 minutes of the last successful ping; or you came back less than 5 minutes after the previous request, when the cache was alive without pings. A conversation that changed its tools, system prompt or model midway is also wasted.
+- **Saved**: you came back more than 5 minutes after the previous request, when the cache would have expired without pings, and less than 5 minutes after the last successful cache read, while the cache was alive. The amount saved is the context priced at the difference between the 5-minute write price and the read price.
+- **Wasted**: the last ping read no cache, and no earlier ping in the round read a cache that was still alive when you came back; you did not come back within 5 minutes of the last successful ping; or you came back less than 5 minutes after the previous request, when the cache was alive without pings. A conversation that changed its tools, system prompt or model midway is also wasted.
 - **Lit**: the last successful ping was less than 5 minutes ago, and there is no result yet.
 - **Miss** and **Failed**: the round has no return event and its last ping read no cache, wrote any cache or failed. An in-flight ping finishing after a return does not override a settled Saved or Wasted result.
 
