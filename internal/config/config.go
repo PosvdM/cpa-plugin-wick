@@ -34,7 +34,8 @@ type Config struct {
 	// leaves subagents out.
 	SubagentDurationMinutes int `yaml:"subagent_duration_minutes" json:"subagent_duration_minutes"`
 	// OtherClients opts non-native Claude Messages clients into 5m caching and pings.
-	// It defaults to false; explicit sessions and caller cache markers are required.
+	// It defaults to false: other clients must send an explicit session ID and
+	// cache markers, and their pings should be checked after turning it on.
 	OtherClients bool `yaml:"other_clients" json:"other_clients"`
 	// MinBodyKB skips requests whose body is smaller than this many KiB.
 	MinBodyKB int `yaml:"min_body_kb" json:"min_body_kb"`

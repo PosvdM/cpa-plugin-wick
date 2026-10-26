@@ -87,7 +87,7 @@
 `other_clients` 默认是 `false`，其他客户端须手动开启，并满足下文的缓存标记和显式会话要求。CPA v8.0.43 通过 `CallerScope` 保持普通请求与重放的工具别名一致：
 
 - CPA 的 `session.CallerScope` 对去除首尾空白后的客户端 key 计算带域前缀的 SHA-256，输出不可逆的十六进制标识。相同 key 在 CPA 重启后保持相同 scope；空 key 得到空 scope，CPA 使用默认调用方身份。
-- `parseRequest` 优先取 `RequestInterceptRequest.CallerScope`，为空时取 `Metadata[pluginapi.CallerScopeMetadataKey]` 的字符串值。此步骤在 `ttl_1h` 提前返回之前完成，供清理时隔离调用方。
+- `parseRequest` 优先取 `RequestInterceptRequest.CallerScope`，为空时取 `Metadata[pluginapi.CallerScopeMetadataKey]` 的字符串值。这一步在 `ttl_1h` 提前返回之前完成，因为清理 1 小时缓存的对话时也要按调用方区分。
 - `Manager.ping` 把 scope 原样放进 `HostModelExecutionRequest.CallerScope`。CPA 的 `internal/pluginhost/host_callbacks.go` 把它传入执行上下文，`internal/runtime/executor/claude_executor_request.go` 的工具别名密钥优先取 caller scope；`auth_id` 仍只选择上游账号。
 - 经 CPA 确认的原生 Claude Code 请求跳过伪装和工具别名。其他请求仅在指纹策略启用 `MCPAlias` 且实际进行了伪装时改写工具名。
 
@@ -237,9 +237,9 @@ v0.5.0 起每条事件都带 `returns: true`，用来区分“没有回来”和
 - 下次挑灯时间不早于加载后 3 秒，给 CPA 完成插件加载留出时间；也不晚于 `last_read` 之后 290 秒（缓存有效期减去 10 秒，留给请求到达上游），`interval_max` 大于 290 时保存的时间可能更晚。
 - 如果加载后 3 秒已经晚于 `last_read` 之后 290 秒，缓存视为已过期，不恢复，下一次写入时删除其文件。
 - 恢复的对话取新的代数，次数、单独设置的分钟数和最后请求时间保持不变，重放携带保存的 caller scope。
-- 请求首行总是写入 `caller_scope`，包括空字符串。缺少该字段的旧格式记录全部丢弃，info 日志说明数量和身份未知的原因；原生和其他客户端采用相同规则。
+- 请求文件的首行总是写入 `caller_scope`，值为空也写。没有这个字段的文件是 v0.8.0 之前保存的，无法知道原来的调用方，恢复时全部丢弃，原生和其他客户端都一样，并写一条 info 日志说明丢弃了几个。
 
-caller scope 仅用于重放和对话隔离，不输出到管理页面、status API、日志或 history 事件。
+caller scope 只用于重放和区分对话，不出现在管理页面、status API、日志和 history 事件中。
 
 ### 挑灯记录
 
