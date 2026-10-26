@@ -1,57 +1,63 @@
-name: build
+name: release
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Each build job tests on its own platform first, so there are no separate test jobs.
+# macOS and Windows minutes cost more, which is why this runs only for releases.
 jobs:
-  test:
+  build-linux:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - { runner: ubuntu-latest, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    # Debian 12 matches the CPA Docker image, so the plugin links against the same glibc.
+    container: golang:1.26.10-bookworm
+    steps:
+      - uses: actions/checkout@v7
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./internal/...
+      - run: go test ./internal/...
+      - run: sh scripts/ci-build.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wick-linux-${{ matrix.arch }}
+          path: dist/
+
+  # One job builds both architectures; the runner is arm64 and cross-compiles amd64.
+  build-darwin:
+    runs-on: macos-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26.10"
-      - if: runner.os == 'Linux'
-        run: test -z "$(gofmt -l .)"
       - run: go vet ./internal/...
       - run: go test ./internal/...
-
-  build:
-    needs: test
-    strategy:
-      matrix:
-        include:
-          - { runner: ubuntu-latest, os: linux, arch: amd64 }
-          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
-    runs-on: ${{ matrix.runner }}
-    # Debian 12 matches the CPA Docker image, so the plugin links against the same glibc.
-    container: golang:1.26.10-bookworm
-    steps:
-      - uses: actions/checkout@v7
-      - run: sh scripts/ci-build.sh ${{ matrix.arch }}
+      - run: |
+          sh scripts/ci-build.sh amd64 && mv dist dist-amd64
+          sh scripts/ci-build.sh arm64 && mv dist dist-arm64
       - uses: actions/upload-artifact@v7
         with:
-          name: wick-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/
+          name: wick-darwin-amd64
+          path: dist-amd64/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wick-darwin-arm64
+          path: dist-arm64/
 
-  build-native:
-    needs: test
-    strategy:
-      matrix:
-        include:
-          - { runner: macos-latest, os: darwin, arch: amd64 }
-          - { runner: macos-latest, os: darwin, arch: arm64 }
-          - { runner: windows-latest, os: windows, arch: amd64 }
-    runs-on: ${{ matrix.runner }}
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
     defaults:
       run:
         shell: bash
@@ -60,16 +66,19 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26.10"
-      - run: sh scripts/ci-build.sh ${{ matrix.arch }}
+      - run: go vet ./internal/...
+      - run: go test ./internal/...
+      - run: sh scripts/ci-build.sh amd64
       - uses: actions/upload-artifact@v7
         with:
-          name: wick-${{ matrix.os }}-${{ matrix.arch }}
+          name: wick-windows-amd64
           path: dist/
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, build-native]
+    if: github.event_name == 'push'
+    needs: [build-linux, build-darwin, build-windows]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

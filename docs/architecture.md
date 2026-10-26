@@ -284,7 +284,12 @@ sh scripts/build.sh 0.1.0
 
 ### 发布
 
-推送 `v*` 标签后，GitHub Actions（`.github/workflows/build.yml`）运行测试，构建 Linux amd64/arm64、macOS amd64/arm64 和 Windows amd64 五个版本，打包为 `wick_<版本>_<系统>_<架构>.zip` 并附上 `checksums.txt`，创建草稿 Release。推送到 `main` 时只构建并上传 Actions 产物。
+GitHub Actions 有两个工作流：
+
+- `.github/workflows/ci.yml`：推送到 `main` 和 PR 时在 Linux 上检查 gofmt，运行 vet 和测试。只改动 Markdown、`docs/` 或 `assets/` 的提交不触发。同一分支的新提交会取消仍在运行的旧任务。
+- `.github/workflows/release.yml`：推送 `v*` 标签后，在 Linux amd64/arm64、macOS 和 Windows 上分别运行测试，再构建五个版本（macOS 的 amd64 和 arm64 在同一个任务中构建），打包为 `wick_<版本>_<系统>_<架构>.zip` 并附上 `checksums.txt`，创建草稿 Release。在 Actions 页面手动运行时只构建，产物上传到 Actions，不创建 Release。
+
+私有仓库的 macOS 和 Windows 运行时间按更高倍数计入 Actions 额度，因此只在发布时使用。
 
 ### 修改约定
 
