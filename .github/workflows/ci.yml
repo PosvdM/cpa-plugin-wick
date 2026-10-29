@@ -26,3 +26,7 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./internal/...
       - run: go test ./internal/...
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - run: node --test internal/web/page.test.cjs

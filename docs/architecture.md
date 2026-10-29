@@ -66,7 +66,7 @@
 - 对话以客户端和第一句话显示，完整的第一句话、项目目录、会话 ID 和对话键放在悬停提示中。入口与客户端名称的对应关系在 `page.js` 的 `CLIENTS` 中，未列出的入口原样显示。
 - 空闲时长和倒计时都显示为 `分:秒`，一小时起为 `时:分:秒`。
 - 上下文大小是一次挑灯的全部输入：`cache_read_input_tokens`、`cache_creation_input_tokens` 和 `input_tokens` 之和。正在挑灯的对话用状态中的 `last_usage` 计算，挑灯记录用 `context`。
-- 挑灯记录的对话行可以点击，或用 Enter、空格键展开逐轮明细。展开状态按对话键保存在页面中，刷新后保留。页面只渲染接口返回的轮次和金额，不自己计算；价格未取得（`prices.fetched` 为空）时不显示金额，对话中有价格的轮次时才显示花费。花费对比卡片的金额、差额、百分比和统计都直接使用 `compare` 的字段，横条只按最大金额缩放，桌面按标签、横条、金额、明细排列，窄屏把明细换到横条下方；`since` 为空或价格未取得时回退到 `totals` 汇总。覆盖时间晚于响应中的 `from` 时显示实际日期时间。
+- 挑灯记录的对话行可以点击，或用 Enter、空格键展开逐轮明细。展开状态按对话键保存在页面中，刷新后保留。页面只渲染接口返回的轮次和金额，不自己计算；价格未取得（`prices.fetched` 为空）时不显示金额，对话中有价格的轮次时才显示花费。花费对比卡片的金额、标题差额和统计直接使用 `compare` 的字段。副标题通过 `percent_baseline` 在开头统一标明“相对不挑灯：”（英文为“vs no Wick:”），两项百分比均以 `none` 为基数：Wick 使用 `percent`，1 小时缓存使用 `(none - hour) / none × 100`，不先对金额取整。`percentDelta` 对百分比绝对值调用 `toFixed(1)`，结果为 `0.0` 时显示持平，否则按原始值的正负显示便宜或贵，并使用同一舍入结果；前后两项均写明方案名称。`none` 为零时提示基准花费为 $0、无法计算百分比，基数或对应数据缺失时提示暂无对比数据，均保留统一的基准前缀。横条只按最大金额缩放，桌面按标签、横条、金额、明细排列，窄屏把明细换到横条下方；`since` 为空或价格未取得时回退到 `totals` 汇总。覆盖时间晚于响应中的 `from` 时显示实际日期时间。
 - 分段按钮（默认挑灯时长、子代理挑灯时长、两组范围）的滑块由 `placeThumb` 定位：测量选中按钮的 `offsetLeft`、`offsetTop`、宽和高，写入 CSS 变量。按钮宽度不同，还可能换行，所以不按序号计算位置。点击时滑块带回弹过渡滑过去，并播放挤压动画 `seg-squash`；首次显示、切换语言、窗口尺寸变化、从隐藏变为可见时由 ResizeObserver 触发，直接定位，不播动画。位置没有变化时跳过，避免打断正在进行的滑动。`prefers-reduced-motion` 时关闭过渡和动画。外观和动画曲线与 Lamplighter 的模式开关相同，两个项目各有一份实现。
 - 标题旁的图标是 `internal/web/logo.png`（64 px），以 data URI 内嵌在页面中。仓库是私有的，页面无法从 GitHub 加载仓库中的文件。
 
@@ -203,7 +203,7 @@ CPA 的 `sdk/cliproxy/session/identity.go` 在有显式会话信号时通过 `Ex
 - `pings` 和 `saved`：结束时间（回来的时间，没有时为最后一次挑灯的时间）不早于 `since` 的轮次的花费和省下的金额，`pending` 轮的花费计入。
 - `since` 是范围内第一个有用量的 `request` 事件的时间，在它之前结束的轮次不计入，三种做法覆盖同一段时间。模型没有价格的请求和轮次计入 `unpriced`。
 - `ping_count`、`failed`、`rounds` 和 `results` 汇总结束时间不早于 `since` 的同一批轮次，包括无价格轮次；`Round.Failed` 统计轮内失败挑灯次数，结论为省下的轮次也可能包含失败。金额排除无价格轮次。
-- `wick = cache + pings`、`none = cache + saved`；`difference = none - wick`，`hour_difference = hour - wick`，正值表示 Wick 更便宜。`none > 0` 时 `percent = difference / none × 100`，否则省略，避免除零。这些字段用于标题和三条横条，前端不计算业务差额或轮次。未缓存的输入和输出三者相同，不计入。
+- `wick = cache + pings`、`none = cache + saved`；`difference = none - wick`，`hour_difference = hour - wick`，正值表示 Wick 更便宜。`none > 0` 时 `percent = difference / none × 100`，否则省略，避免除零。这些字段用于标题和三条横条；前端只为副标题换算 1 小时缓存相对 `none` 的百分比，不重算金额或轮次。未缓存的输入和输出三者相同，不计入。
 
 ### API 价格
 
@@ -255,6 +255,7 @@ caller scope 只用于重放和区分对话，不出现在管理页面、status 
 ### 环境
 
 - Go 1.26.10 或更新版本；Docker 构建镜像和 CI 工具链固定为 1.26.10。
+- 页面测试使用 Node.js 24 或更新版本的内置测试运行器，不需要安装 npm 依赖。
 - 构建动态库需要 cgo 和目标平台的 C 编译器。`internal/` 下的包都是纯 Go，测试不需要 cgo。
 
 ### 测试
@@ -262,7 +263,10 @@ caller scope 只用于重放和区分对话，不出现在管理页面、status 
 ```bash
 go vet ./...
 go test ./... -timeout=90s
+node --test internal/web/page.test.cjs
 ```
+
+页面测试通过轻量 DOM 替身执行 `page.js` 的花费对比渲染，覆盖中英文、四个时间范围、共同基数及其前缀只出现一次、贵与便宜、持平、正负近零差异、0.04% / 0.05% / 0.06% 及舍入分界两侧、浮点微小误差、零基数、缺失数据和无价格时的汇总回退，并检查标题、横条金额和统计保持不变。
 
 无缓存标记的长对话比较基准使用 500 条消息，每条含 10 个内容块：
 
@@ -286,7 +290,7 @@ sh scripts/build.sh 0.1.0
 
 GitHub Actions 有两个工作流：
 
-- `.github/workflows/ci.yml`：推送到 `main` 和 PR 时在 Linux 上检查 gofmt，运行 vet 和测试。只改动 Markdown、`docs/` 或 `assets/` 的提交不触发。同一分支的新提交会取消仍在运行的旧任务。
+- `.github/workflows/ci.yml`：推送到 `main` 和 PR 时在 Linux 上检查 gofmt，运行 vet、Go 测试和 Node.js 页面测试。只改动 Markdown、`docs/` 或 `assets/` 的提交不触发。同一分支的新提交会取消仍在运行的旧任务。
 - `.github/workflows/release.yml`：推送 `v*` 标签后，在 Linux amd64/arm64、macOS 和 Windows 上分别运行测试，再构建五个版本（macOS 的 amd64 和 arm64 在同一个任务中构建），打包为 `wick_<版本>_<系统>_<架构>.zip` 并附上 `checksums.txt`，创建草稿 Release。在 Actions 页面手动运行时只构建，产物上传到 Actions，不创建 Release。
 
 私有仓库的 macOS 和 Windows 运行时间按更高倍数计入 Actions 额度，因此只在发布时使用。

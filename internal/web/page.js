@@ -145,8 +145,12 @@
       totals_unpriced: "{0}的模型在定价页上找不到价格，不计入金额。",
       plan_none: "不挑灯", plan_wick: "挑灯（当前）", plan_hour: "1 小时缓存",
       cost_saves: "挑灯省下 {0}", cost_costs: "挑灯多花 {0}",
-      percent_less: "比不挑灯便宜 {0}%", percent_more: "比不挑灯贵 {0}%",
-      hour_less: "比 1 小时缓存便宜 {0}", hour_more: "比 1 小时缓存贵 {0}",
+      percent_baseline: "相对不挑灯：{0}",
+      percent_less: "挑灯便宜 {0}%", percent_more: "挑灯贵 {0}%",
+      percent_equal: "挑灯持平", percent_unavailable: "挑灯暂无对比数据",
+      hour_percent_less: "1 小时缓存便宜 {0}%", hour_percent_more: "1 小时缓存贵 {0}%",
+      hour_percent_equal: "1 小时缓存持平", hour_percent_unavailable: "1 小时缓存暂无对比数据",
+      percent_zero_baseline: "基准花费为 $0，无法计算百分比", percent_no_baseline: "暂无可比较的花费数据",
       wick_breakdown: "缓存 {0} + 挑灯 {1}", none_breakdown: "缓存 {0} + 过期重写 {1}",
       hour_breakdown: "缓存按 1 小时写入价和读取价计算，不挑灯",
       cost_pings: "挑灯 {0} 次", cost_rounds: "{0} 轮", cost_saved: "{0} 轮等到你回来", cost_wasted: "{0} 轮白挑", cost_pending: "{0} 轮挑灯中",
@@ -218,8 +222,12 @@
       totals_unpriced: "{0} with a model missing from the pricing page are shown without amounts.",
       plan_none: "No Wick", plan_wick: "Wick · Current", plan_hour: "1-hour cache",
       cost_saves: "Wick saves {0} vs no Wick", cost_costs: "Wick costs {0} more vs no Wick",
-      percent_less: "{0}% cheaper vs no Wick", percent_more: "{0}% more vs no Wick",
-      hour_less: "{0} cheaper vs 1-hour cache", hour_more: "{0} more vs 1-hour cache",
+      percent_baseline: "vs no Wick: {0}",
+      percent_less: "Wick {0}% cheaper", percent_more: "Wick {0}% more expensive",
+      percent_equal: "Wick costs the same", percent_unavailable: "Wick comparison unavailable",
+      hour_percent_less: "1-hour cache {0}% cheaper", hour_percent_more: "1-hour cache {0}% more expensive",
+      hour_percent_equal: "1-hour cache costs the same", hour_percent_unavailable: "1-hour cache comparison unavailable",
+      percent_zero_baseline: "baseline cost is $0; percentages unavailable", percent_no_baseline: "no comparable cost data",
       wick_breakdown: "Cache {0} + pings {1}", none_breakdown: "Cache {0} + expired-cache rewrites {1}",
       hour_breakdown: "Cache at 1-hour write and read prices, without pings",
       cost_pings: "{0} pings", cost_rounds: "{0} rounds", cost_saved: "{0} rounds you returned to", cost_wasted: "{0} wasted rounds", cost_pending: "{0} rounds still lit",
@@ -773,18 +781,28 @@
     renderPriceHint(data);
   }
 
+  function percentDelta(percent, prefix) {
+    if (!Number.isFinite(percent)) return translate(prefix + "_unavailable");
+    var rounded = Math.abs(percent).toFixed(1);
+    if (rounded === "0.0") return translate(prefix + "_equal");
+    return translate(prefix + (percent > 0 ? "_less" : "_more"), rounded);
+  }
+
   function renderCompare(cmp) {
     $("compare-wrap").hidden = !cmp;
     var body = $("cost-bars");
     clear(body);
     if (!cmp) return;
-    var diff = cmp.difference || 0, hourDiff = cmp.hour_difference || 0;
+    var diff = cmp.difference || 0;
     $("cost-headline").className = diff >= 0 ? "cost-success" : "cost-warning";
     $("cost-headline").textContent = translate(diff >= 0 ? "cost_saves" : "cost_costs", fmtMoney(diff));
-    var deltas = [];
-    if (typeof cmp.percent === "number") deltas.push(translate(cmp.percent >= 0 ? "percent_less" : "percent_more", Math.abs(cmp.percent).toFixed(1)));
-    deltas.push(translate(hourDiff >= 0 ? "hour_less" : "hour_more", fmtMoney(hourDiff)));
-    $("cost-deltas").textContent = deltas.join(" · ");
+    var deltas = translate(cmp.none === 0 ? "percent_zero_baseline" : "percent_no_baseline");
+    if (Number.isFinite(cmp.none) && cmp.none > 0) {
+      // Both percentages use the no-Wick cost, without rounding dollar amounts first.
+      var hourPercent = Number.isFinite(cmp.hour) ? (cmp.none - cmp.hour) / cmp.none * 100 : null;
+      deltas = percentDelta(cmp.percent, "percent") + " · " + percentDelta(hourPercent, "hour_percent");
+    }
+    $("cost-deltas").textContent = translate("percent_baseline", deltas);
     var max = Math.max(cmp.wick || 0, cmp.hour || 0, cmp.none || 0);
     function bar(label, cost, detail, primary) {
       body.appendChild(el("div", { class: "cost-row" + (primary ? " cost-current" : "") }, [
