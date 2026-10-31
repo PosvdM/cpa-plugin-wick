@@ -156,6 +156,7 @@ func TestRewoundConversationReplacement(t *testing.T) {
 	tool := chatMessage("user", json.RawMessage(`[{"type":"tool_result","tool_use_id":"call","content":"done"}]`), false)
 	mixedTool := chatMessage("user", json.RawMessage(`[{"type":"text","text":"note"},{"type":"tool_result","tool_use_id":"call","content":"done"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]`), false)
 	imageInput := chatMessage("user", json.RawMessage(`[{"type":"text","text":"new input"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]`), false)
+	oldImageInput := strings.Replace(imageInput, "new input", "old input", 1)
 	prefix := []string{user("first"), assistant("answer")}
 	history := func(tail ...string) []string { return append(append([]string(nil), prefix...), tail...) }
 	for _, tt := range []struct {
@@ -170,6 +171,8 @@ func TestRewoundConversationReplacement(t *testing.T) {
 		{"earlier user turn", history(user("old"), assistant("reply"), user("later"), assistant("another reply"), user("latest")), history(user("new")), true},
 		{"longer resent history", history(user("old"), assistant("reply")), history(user("new"), assistant("new reply"), user("next")), true},
 		{"text and image input", history(user("old"), assistant("reply")), history(imageInput), true},
+		{"old text and image input", history(oldImageInput, assistant("reply")), history(user("new")), true},
+		{"both text and image inputs", history(oldImageInput, assistant("reply")), history(imageInput), true},
 		{"old assistant", history(assistant("old"), user("later")), history(user("new")), false},
 		{"new assistant", history(user("old"), assistant("reply")), history(assistant("new")), false},
 		{"old tool result", history(tool, assistant("reply")), history(user("new")), false},
