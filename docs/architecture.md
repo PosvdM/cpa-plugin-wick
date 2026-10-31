@@ -57,7 +57,7 @@
 
 页面的实现：
 
-- 页面运行在管理中心的同源 iframe 中。管理密钥取自管理中心的 `localStorage`（`cli-proxy-auth`，用主机和 User-Agent 派生的密钥做异或混淆）；取不到时让用户输入，只存在 `sessionStorage`。主题和语言读取父页面根元素的 `data-theme` 和 `lang`，单独打开时读取管理中心存在 `localStorage` 中的设置。这部分与 Lamplighter 的管理页面相同。
+- 页面运行在管理中心的同源 iframe 中。管理密钥取自管理中心的 `localStorage`（`cli-proxy-auth`，支持 `enc::v2::`、`enc::v1::` 和明文 JSON；v2 的异或掩码由固定盐和主机派生，v1 还包含 User-Agent）；取不到时让用户输入，只存在 `sessionStorage`。主题和语言读取父页面根元素的 `data-theme` 和 `lang`，单独打开时读取管理中心存在 `localStorage` 中的设置。这部分与 Lamplighter 的管理页面相同。
 - 设置通过 CPA 的 `GET` / `PATCH /v0/management/plugins/wick/config` 读写。CPA 对顶层键做浅合并后写入 `config.yaml`，再热加载并调用 `plugin.reconfigure`。CPA 不校验插件配置，因此页面在保存前检查间隔范围、保留天数和整数；插件收到无效配置时使用默认值，并在状态中返回 `config_error`。
 - 默认挑灯时长和子代理挑灯时长共用 `page.js` 中的分钟数预设 `PRESETS`，分别对应 `duration_minutes` 和 `subagent_duration_minutes`，两行的元素在 `DURATIONS` 中。
 - 单个对话的时长预设在 `DURATION_PRESETS` 中。菜单按长短排列，默认时长（状态中的 `default_minutes`）插在其中，与某个预设相同时合并为一项。缓存已经能保持到的时长禁用（当前选中的一项除外），界限 `minutesCovered` 为 `last_read` 减 `last_request` 再加 5 分钟；自定义的分钟数同样检查。
@@ -276,7 +276,7 @@ go test ./... -timeout=90s
 node --test internal/web/page.test.cjs
 ```
 
-页面测试通过轻量 DOM 替身执行 `page.js` 的花费对比渲染，覆盖中英文、四个时间范围、共同基数及其前缀只出现一次、贵与便宜、持平、正负近零差异、0.04% / 0.05% / 0.06% 及舍入分界两侧、浮点微小误差、零基数、缺失数据和无价格时的汇总回退，并检查标题、横条金额和统计保持不变。
+页面测试通过轻量 DOM 替身执行 `page.js`，验证管理密钥的 v1、v2 和明文读取、无效存储回退，并测试花费对比渲染，覆盖中英文、四个时间范围、共同基数及其前缀只出现一次、贵与便宜、持平、正负近零差异、0.04% / 0.05% / 0.06% 及舍入分界两侧、浮点微小误差、零基数、缺失数据和无价格时的汇总回退，并检查标题、横条金额和统计保持不变。
 
 无缓存标记的长对话比较基准使用 500 条消息，每条含 10 个内容块：
 

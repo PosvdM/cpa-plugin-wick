@@ -309,16 +309,19 @@
 
   // ---- Management API ----
 
-  // The Management Center keeps the key in localStorage, XOR-obfuscated with
-  // a key derived from the host and user agent, when "remember password" is on.
+  // The Management Center stores the remembered key in localStorage. Read v2
+  // XOR obfuscation using the host, legacy v1 using the host and user agent,
+  // or plaintext JSON.
   function centerKey() {
     try {
       var raw = localStorage.getItem("cli-proxy-auth");
       if (!raw) return "";
-      var prefix = "enc::v1::";
+      var prefix = raw.indexOf("enc::v2::") === 0 ? "enc::v2::" : "enc::v1::";
       if (raw.indexOf(prefix) === 0) {
         var data = atob(raw.slice(prefix.length));
-        var mask = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + "|" + navigator.userAgent);
+        var maskText = "cli-proxy-api-webui::secure-storage|" + location.host;
+        if (prefix === "enc::v1::") maskText += "|" + navigator.userAgent;
+        var mask = new TextEncoder().encode(maskText);
         var bytes = new Uint8Array(data.length);
         for (var i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) ^ mask[i % mask.length];
         raw = new TextDecoder().decode(bytes);

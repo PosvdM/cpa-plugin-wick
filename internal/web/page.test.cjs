@@ -20,7 +20,7 @@ class Element {
   setAttribute(name, value) { this.attributes[name] = value; }
 }
 
-function page(language) {
+function page(language, environment = {}) {
   const elements = new Map();
   const get = (id) => {
     if (!elements.has(id)) elements.set(id, new Element());
@@ -34,9 +34,11 @@ function page(language) {
       createElement: () => new Element(),
       createTextNode: (text) => Object.assign(new Element(), { textContent: text }),
     },
+    ...environment,
   };
   runInNewContext(source.slice(0, startup) + `
     globalThis.pageTest = {
+      centerKey: centerKey,
       load: function (range, language) {
         lang = language;
         savingsRange = range;
@@ -46,6 +48,7 @@ function page(language) {
   })();`, context, { filename: "page.js" });
   return {
     get,
+    centerKey: context.pageTest.centerKey,
     async load(data) {
       let requested;
       context.fetch = async (path) => {
@@ -57,6 +60,65 @@ function page(language) {
     },
   };
 }
+
+const authHost = "localhost:8317";
+const authAgent = "Wick test browser/1.0";
+const authKey = "test-management-key-中文🔑";
+
+function obfuscatedAuth(version, value) {
+  const mask = Buffer.from("cli-proxy-api-webui::secure-storage|" + authHost +
+    (version === "v1" ? "|" + authAgent : ""), "utf8");
+  const bytes = Buffer.from(JSON.stringify(value), "utf8");
+  for (let i = 0; i < bytes.length; i++) bytes[i] ^= mask[i % mask.length];
+  return `enc::${version}::${bytes.toString("base64")}`;
+}
+
+function rememberedKey(raw, overrides = {}) {
+  return page("en", {
+    localStorage: { getItem: (name) => {
+      assert.equal(name, "cli-proxy-auth");
+      return raw;
+    } },
+    location: { host: authHost },
+    navigator: { userAgent: authAgent },
+    atob, TextEncoder, TextDecoder,
+    ...overrides,
+  }).centerKey();
+}
+
+for (const [shape, value] of [
+  ["persisted state", { state: { managementKey: authKey, rememberPassword: true }, version: 0 }],
+  ["plain object", { managementKey: authKey }],
+]) {
+  for (const format of ["v1", "v2", "plaintext"]) {
+    test(`remembered key: ${format} ${shape}`, () => {
+      const raw = format === "plaintext" ? JSON.stringify(value) : obfuscatedAuth(format, value);
+      assert.equal(rememberedKey(raw), authKey);
+    });
+  }
+}
+
+test("remembered key: v2 does not read the user agent", () => {
+  const navigator = { get userAgent() { throw new Error("user agent unavailable"); } };
+  assert.equal(rememberedKey(obfuscatedAuth("v2", { state: { managementKey: authKey } }), { navigator }), authKey);
+});
+
+test("remembered key: v1 requires the matching user agent", () => {
+  const raw = obfuscatedAuth("v1", { state: { managementKey: authKey } });
+  assert.equal(rememberedKey(raw, { navigator: { userAgent: "other browser/2.0" } }), "");
+});
+
+for (const raw of [null, "", "not json", "enc::v2::!", "enc::v1::!", "enc::v3::e30=",
+  "null", "{}", '{"state":{}}', '{"state":{"managementKey":123}}']) {
+  test(`remembered key: invalid or missing storage ${JSON.stringify(raw)}`, () => {
+    assert.equal(rememberedKey(raw), "");
+  });
+}
+
+test("remembered key: unavailable storage falls back to manual entry", () => {
+  const localStorage = { getItem() { throw new Error("storage unavailable"); } };
+  assert.equal(rememberedKey(null, { localStorage }), "");
+});
 
 const stamp = "2026-10-24T00:00:00Z";
 function comparison(wick, hour, none) {
