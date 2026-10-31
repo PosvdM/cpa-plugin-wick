@@ -485,47 +485,86 @@ func (m *Manager) pruneEndedLocked(now time.Time) {
 	}
 }
 
-// replaceLocked snuffs out the conversations that req continues under a
-// new key: same session and agent, and req's messages open with the old
-// request's messages, all but the last one, which clients may extend with
-// the next turn, unchanged apart from cache_control. The key changes when
-// tools are added, such as MCP servers or deferred tools loaded
-// mid-conversation, or when the system prompt or the model changes. The
-// cache is matched from the start, tools first, so the old conversation's
-// cache can no longer be read. Comparing the messages spares Claude Code's
-// helper requests, which share the session ID but do not continue the
-// conversation.
+// stopSubagentsLocked snuffs out subagents started while a replaced main
+// conversation waited for its last response, within the same caller scope
+// and session. A different main key is not treated as a subagent.
+func (m *Manager) stopSubagentsLocked(req request, lastRequest time.Time) {
+	if req.Agent != "" {
+		return
+	}
+	for key, other := range m.convs {
+		if key != req.Key && other.req.CallerScope == req.CallerScope && other.req.Session == req.Session && other.req.Agent != "" && other.firstSeen.After(lastRequest) {
+			m.removeLocked(key)
+			m.logLocked("debug", "subagent finished, keep-alive stopped", other.req, other.pings, stopSuperseded)
+		}
+	}
+}
+
+// replaceLocked snuffs out conversations continued or rewound under a new
+// key in the same caller scope, session and agent. Keys change with tools,
+// system prompts or models, so the old cache prefix can no longer be read.
+// Messages are compared without message-level or direct content-block cache
+// markers. A rewind needs a shared message and user input on both sides of
+// the divergence; tool results and divergence at the first message do not
+// identify one.
 func (m *Manager) replaceLocked(req request) {
+	var rawMessages []gjson.Result
 	var messages []string
 	parsed := false
+	var replaced []*conversation
 	for key, other := range m.convs {
 		if other.req.CallerScope != req.CallerScope || other.req.Session != req.Session || other.req.Agent != req.Agent {
 			continue
 		}
 		if !parsed {
-			for _, msg := range gjson.GetBytes(req.Body, "messages").Array() {
+			rawMessages = gjson.GetBytes(req.Body, "messages").Array()
+			for _, msg := range rawMessages {
 				messages = append(messages, messageWithoutCacheControl(msg))
 			}
 			parsed = true
 		}
-		if continues(other.req.Body, messages) {
-			m.removeLocked(key)
-			m.logLocked("info", "conversation continued with other tools, system prompt or model, keep-alive stopped", other.req, other.pings, stopReplaced)
+		before := gjson.GetBytes(other.req.Body, "messages").Array()
+		k := commonMessagePrefix(before, messages)
+		message := "conversation continued with other tools, system prompt or model, keep-alive stopped"
+		if !continues(before, messages, k) {
+			if k < 1 || k >= len(before) || k >= len(messages) || !userInput(before[k]) || !userInput(rawMessages[k]) {
+				continue
+			}
+			message = "conversation rewound and resent, keep-alive stopped"
 		}
+		m.removeLocked(key)
+		m.logLocked("info", message, other.req, other.pings, stopReplaced)
+		replaced = append(replaced, other)
+	}
+	// Finish matching old keys before removing subagents from the same map.
+	for _, other := range replaced {
+		m.stopSubagentsLocked(req, other.lastRequest)
 	}
 }
 
-// continues reports whether messages open with the messages of the request
-// body old, all but the last one, ignoring cache_control on messages and
-// their direct content blocks. A conversation of one message is never
-// matched, since none of it can be compared.
-func continues(old []byte, messages []string) bool {
-	before := gjson.GetBytes(old, "messages").Array()
-	if len(before) < 2 || len(messages) < len(before) {
+// continues reports whether messages are at least as long as before and
+// share all but its last message, which clients may extend on the next
+// turn. prefix is their common prefix length, ignoring cache_control on
+// messages and direct content blocks. One-message requests cannot match.
+func continues(before []gjson.Result, messages []string, prefix int) bool {
+	return len(before) >= 2 && len(messages) >= len(before) && prefix >= len(before)-1
+}
+
+func commonMessagePrefix(before []gjson.Result, messages []string) int {
+	k := 0
+	for k < len(before) && k < len(messages) && messageWithoutCacheControl(before[k]) == messages[k] {
+		k++
+	}
+	return k
+}
+
+// userInput excludes tool results even when mixed with text or images.
+func userInput(message gjson.Result) bool {
+	if message.Get("role").String() != "user" {
 		return false
 	}
-	for i := 0; i < len(before)-1; i++ {
-		if messageWithoutCacheControl(before[i]) != messages[i] {
+	for _, block := range message.Get("content").Array() {
+		if block.Get("type").String() == "tool_result" {
 			return false
 		}
 	}
