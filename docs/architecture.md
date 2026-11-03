@@ -239,7 +239,7 @@ CPA 的 `sdk/cliproxy/session/identity.go` 在有显式会话信号时通过 `Ex
 | `ended` | 收尾 / Ended | 对话最后一轮，挑灯后没有再回来；`end: until` 表示挑满时长后停下，`manual` 表示手动熄灭，`superseded` 表示随主对话熄灭，`evicted` 表示跟踪的对话太多被挤出，空值表示缓存过期前没回来。 |
 | `replaced` | 换键 / Key changed | 工具、系统提示或模型变了，对话换了新键继续，旧键停止。 |
 | `wasted` | 白挑 / Wasted | 挑灯后很快回来，距上个请求不到 5 分钟，不挑缓存也还在，挑灯花费没有省下重写。没有回来的一轮不会仅因缓存过期判为白挑。 |
-| `miss` | 未命中 / Cache miss | 最后一次挑灯未读取缓存，或发生了缓存写入。 |
+| `miss` | 未命中 / Miss | 最后一次挑灯未读取缓存，或发生了缓存写入。 |
 | `failed` | 失败 / Failed | 最后一次挑灯失败。 |
 
 ### 请求用量
