@@ -14,10 +14,29 @@ class Element {
   textContent = "";
   hidden = false;
   attributes = {};
+  parentNode = { hidden: false };
   get firstChild() { return this.children[0]; }
   appendChild(child) { this.children.push(child); }
   removeChild(child) { this.children.splice(this.children.indexOf(child), 1); }
   setAttribute(name, value) { this.attributes[name] = value; }
+  getAttribute(name) { return this.attributes[name]; }
+  addEventListener() {}
+  contains() { return false; }
+}
+
+// The text of node and its descendants.
+function text(node) {
+  return node.textContent + node.children.map(text).join("");
+}
+
+// The descendants of node whose class list includes name.
+function byClass(node, name) {
+  const found = [];
+  for (const child of node.children) {
+    if ((child.className || "").split(" ").includes(name)) found.push(child);
+    found.push(...byClass(child, name));
+  }
+  return found;
 }
 
 function page(language, environment = {}) {
@@ -34,6 +53,8 @@ function page(language, environment = {}) {
       createElement: () => new Element(),
       createTextNode: (text) => Object.assign(new Element(), { textContent: text }),
     },
+    setTimeout: () => 0,
+    clearTimeout: () => {},
     ...environment,
   };
   runInNewContext(source.slice(0, startup) + `
@@ -43,12 +64,19 @@ function page(language, environment = {}) {
         lang = language;
         savingsRange = range;
         return loadSavings();
+      },
+      history: function (data, language, open) {
+        lang = language;
+        historyData = data;
+        (open || []).forEach(function (id) { expanded[id] = true; });
+        renderEvents();
       }
     };
   })();`, context, { filename: "page.js" });
   return {
     get,
     centerKey: context.pageTest.centerKey,
+    history: (data, open) => context.pageTest.history(data, language, open),
     async load(data) {
       let requested;
       context.fetch = async (path) => {
@@ -275,10 +303,10 @@ for (const language of ["zh", "en"]) {
   }
 }
 
-test("headline, dollar amounts, breakdowns and statistics stay unchanged", async () => {
+test("headline, dollar amounts, breakdowns and statistics", async () => {
   const ui = page("zh");
   await ui.load(response(cases[0].compare));
-  assert.equal(ui.get("cost-headline").textContent, "挑灯省下 $0.11");
+  assert.equal(ui.get("cost-headline").textContent, "挑灯净省 $0.11");
   assert.equal(ui.get("cost-headline").className, "cost-success");
   assert.deepEqual(ui.get("cost-bars").children.map((row) =>
     [row.children[0].textContent, row.children[2].textContent, row.children[3].textContent]), [
@@ -290,4 +318,148 @@ test("headline, dollar amounts, breakdowns and statistics stay unchanged", async
   await ui.load(response(cases[1].compare));
   assert.equal(ui.get("cost-headline").textContent, "挑灯多花 $0.07");
   assert.equal(ui.get("cost-headline").className, "cost-warning");
+});
+
+test("savings card: net headline, saved minus cost, ping cost by result and round counts", async () => {
+  const compare = {
+    ...comparison(1.39, 0.9, 6.37),
+    difference: 4.98, cache: 0.05, pings: 1.34, saved: 6.32,
+    ping_count: 40, rounds: 11, results: { saved: 3, ended: 4, wasted: 2, replaced: 1, pending: 1 },
+    costs: { saved: 0.1, ended: 0.8, wasted: 0.3, replaced: 0, pending: 0.14 },
+  };
+  const expected = {
+    zh: ["挑灯净省 $4.98", "省下重写 $6.32 − 挑灯花费 $1.34（其中收尾 $0.80 · 白挑 $0.30 · 挑灯中 $0.14）",
+      "挑灯 40 次 · 11 轮 · 3 轮等到你回来 · 4 轮收尾 · 2 轮白挑 · 1 轮换键 · 1 轮挑灯中"],
+    en: ["Wick saves $4.98 net", "Rewrites saved $6.32 − ping cost $1.34 (of which ended $0.80 · wasted $0.30 · lit $0.14)",
+      "40 pings · 11 rounds · 3 rounds you returned to · 4 ended rounds · 2 wasted rounds · 1 key-changed rounds · 1 rounds still lit"],
+  };
+  for (const language of ["zh", "en"]) {
+    const ui = page(language);
+    await ui.load(response(compare));
+    assert.deepEqual([ui.get("cost-headline").textContent, ui.get("cost-net").textContent, ui.get("cost-stats").textContent], expected[language]);
+    await ui.load(response({ ...compare, costs: undefined }));
+    assert.equal(ui.get("cost-net").textContent, expected[language][1].replace(/（.*|\s\(.*/, ""));
+  }
+});
+
+test("totals line: net includes every priced round and reads as extra cost when negative", async () => {
+  const totals = { pings: 9, rounds: 3, cost: 0.05, saved: 0.03, net: -0.02, results: { saved: 1, ended: 1, pending: 1 } };
+  for (const [language, line] of [
+    ["zh", "近 24 小时挑灯 9 次（3 轮），挑灯花费 $0.05；1 轮等到你回来，省下重写 $0.03；多花 $0.02。"],
+    ["en", "Last 24 hours: 9 pings in 3 rounds, ping cost $0.05; you came back in time for 1 round, saving $0.03 in rewrites; net cost $0.02."],
+  ]) {
+    const ui = page(language);
+    await ui.load({ range: "24h", from: stamp, prices: { fetched: stamp }, totals, compare: null });
+    assert.equal(ui.get("totals").hidden, false);
+    assert.equal(ui.get("totals").textContent, line);
+  }
+});
+
+function historyData() {
+  const round = (result, extra = {}) => ({
+    start: stamp, last: stamp, model: "claude-opus-5-5", pings: 3, failed: 0, context: 1000,
+    cache_read_tokens: 3000, result, cost: 0.01, ...extra,
+  });
+  return {
+    range: "24h", count: 1, prices: { fetched: stamp },
+    conversations: [{
+      key: "k1", session: "s1", model: "claude-opus-5-5", first: stamp, last: stamp, context: 1000,
+      pings: 21, rounds: 7, cost: 0.07, saved: 0.05, net: -0.02, unpriced: 0,
+      results: { saved: 1, pending: 1, ended: 3, replaced: 1, wasted: 1 },
+      detail: [
+        round("pending"),
+        round("ended", { end: "manual" }),
+        round("ended", { end: "until" }),
+        round("ended"),
+        round("replaced", { end: "replaced" }),
+        round("wasted", { return: stamp, idle: 120 }),
+        round("saved", { return: stamp, idle: 600, saved: 0.05 }),
+      ],
+    }],
+  };
+}
+
+test("history row: ping cost, rewrites saved and a negative net", () => {
+  const ui = page("zh");
+  ui.history(historyData());
+  const row = ui.get("events").children[0];
+  assert.equal(row.children.length, 9);
+  assert.deepEqual(row.children.slice(5, 8).map(text), ["$0.07", "$0.05", "−$0.02"]);
+  assert.match(row.children[7].className, /\bnet-negative\b/);
+
+  const data = historyData();
+  Object.assign(data.conversations[0], { net: 0.03 });
+  ui.history(data);
+  const cell = ui.get("events").children[0].children[7];
+  assert.equal(text(cell), "$0.03");
+  assert.doesNotMatch(cell.className, /net-negative/);
+});
+
+test("history columns are named and explained in page.html", () => {
+  const html = readFileSync(join(__dirname, "page.html"), "utf8");
+  for (const [name, title, label] of [["col_cost", "col_cost_hint", "挑灯花费"], ["col_saved", "col_saved_hint", "省下重写"], ["col_net", "col_net_hint", "净省"]]) {
+    assert.match(html, new RegExp(`data-i18n="${name}" data-i18n-title="${title}">${label}</th>`));
+  }
+});
+
+for (const [language, badges, hints] of [
+  ["zh", ["省下", "挑灯中", "收尾 3", "换键", "白挑"], {
+    "收尾 3": "对话最后一轮，挑灯后你没再回来。",
+    "换键": "工具、系统提示或模型变了，对话换了新键继续，旧键停止。",
+    "白挑": "挑灯后你很快就回来了（距上个请求不到 5 分钟），不挑缓存也还在，这几次挑灯白花了。",
+  }],
+  ["en", ["Saved", "Lit", "Ended 3", "Key changed", "Wasted"], {
+    "Ended 3": "The last round of the conversation; you did not come back after the pings.",
+    "Key changed": "The tools, system prompt or model changed; the conversation continued under a new key and the old key stopped.",
+    "Wasted": "You came back soon after the pings (less than 5 minutes after the previous request); the cache was still there without them, so these pings were wasted.",
+  }],
+]) {
+  test(`${language}: result badges and their hover text`, () => {
+    const ui = page(language);
+    ui.history(historyData());
+    const found = byClass(ui.get("events").children[0].children[8], "badge");
+    assert.deepEqual(found.map(text), badges);
+    assert.deepEqual(found.map((b) => b.className.split(" ")[1]),
+      ["badge-success", "badge-muted", "badge-muted", "badge-muted", "badge-warning"]);
+    for (const b of found) {
+      if (hints[text(b)]) assert.equal(b.attributes.title, hints[text(b)]);
+      else assert.ok(b.attributes.title);
+    }
+  });
+}
+
+test("rounds: ended rounds say why the pings stopped", () => {
+  for (const [language, ended] of [
+    ["zh", [["手动熄灭", "对话最后一轮，挑灯后你没再回来。\n手动熄灭。"],
+      ["挑满时长后停下", "对话最后一轮，挑灯后你没再回来。\n挑满时长后停下。"],
+      ["缓存过期前没回来", "对话最后一轮，挑灯后你没再回来。\n缓存过期前没回来。"]]],
+    ["en", [["Snuffed out by hand", "The last round of the conversation; you did not come back after the pings.\nSnuffed out by hand."],
+      ["Stopped after the time kept lit", "The last round of the conversation; you did not come back after the pings.\nStopped after the time kept lit."],
+      ["You did not come back before the cache expired", "The last round of the conversation; you did not come back after the pings.\nYou did not come back before the cache expired."]]],
+  ]) {
+    const ui = page(language);
+    ui.history(historyData(), ["k1"]);
+    const detail = ui.get("events").children[1];
+    assert.equal(detail.children[0].attributes.colspan, "9");
+    const results = byClass(detail, "result");
+    assert.equal(results.length, 7);
+    assert.deepEqual(results.slice(1, 4).map((cell) => [text(byClass(cell, "result-note")[0]), byClass(cell, "badge")[0].attributes.title]), ended);
+    assert.equal(byClass(results[4], "badge")[0].className, "badge badge-muted");
+    assert.equal(byClass(results[4], "result-note").length, 0);
+    const header = byClass(detail, "rounds")[0].children[0].children[0].children[4];
+    assert.equal(header.textContent, language === "zh" ? "挑灯花费" : "Ping cost");
+    assert.ok(header.attributes.title);
+  }
+});
+
+test("rounds: superseded and evicted ends", () => {
+  const data = historyData();
+  data.conversations[0].detail = [
+    { ...data.conversations[0].detail[1], end: "superseded" },
+    { ...data.conversations[0].detail[1], end: "evicted" },
+  ];
+  const ui = page("zh");
+  ui.history(data, ["k1"]);
+  const notes = byClass(ui.get("events").children[1], "result-note").map(text);
+  assert.deepEqual(notes, ["随主对话熄灭", "跟踪的对话太多，被挤出"]);
 });

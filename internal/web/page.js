@@ -138,13 +138,16 @@
       events: "挑灯记录", range: "范围", range_24h: "24 小时", range_7d: "7 天", range_1m: "1 个月", range_all: "全部",
       range_label_24h: "近 24 小时", range_label_7d: "近 7 天", range_label_1m: "近 1 个月", range_label_all: "保留的 {0} 天内",
       savings: "花费对比",
-      totals_priced: "{0}挑灯 {1}（{2}），花费 {3}；{4}等到你回来，省下 {5}；{6}。",
+      totals_priced: "{0}挑灯 {1}（{2}），挑灯花费 {3}；{4}等到你回来，省下重写 {5}；{6}。",
       totals_plain: "{0}挑灯 {1}（{2}），{3}等到你回来。",
-      net_saved: "净省 {0}", net_cost: "净耗 {0}",
+      net_saved: "净省 {0}", net_cost: "多花 {0}",
       totals_failed: "其中 {0}失败。",
       totals_unpriced: "{0}的模型在定价页上找不到价格，不计入金额。",
       plan_none: "不挑灯", plan_wick: "挑灯（当前）", plan_hour: "1 小时缓存",
-      cost_saves: "挑灯省下 {0}", cost_costs: "挑灯多花 {0}",
+      cost_saves: "挑灯净省 {0}", cost_costs: "挑灯多花 {0}",
+      cost_net: "省下重写 {0} − 挑灯花费 {1}", cost_spent: "（其中{0}）",
+      spent_ended: "收尾 {0}", spent_wasted: "白挑 {0}", spent_replaced: "换键 {0}", spent_pending: "挑灯中 {0}",
+      spent_miss: "未命中 {0}", spent_failed: "失败 {0}",
       percent_baseline: "相对不挑灯：{0}",
       percent_less: "挑灯便宜 {0}%", percent_more: "挑灯贵 {0}%",
       percent_equal: "挑灯持平", percent_unavailable: "挑灯暂无对比数据",
@@ -153,13 +156,17 @@
       percent_zero_baseline: "基准花费为 $0，无法计算百分比", percent_no_baseline: "暂无可比较的花费数据",
       wick_breakdown: "缓存 {0} + 挑灯 {1}", none_breakdown: "缓存 {0} + 过期重写 {1}",
       hour_breakdown: "缓存按 1 小时写入价和读取价计算，不挑灯",
-      cost_pings: "挑灯 {0} 次", cost_rounds: "{0} 轮", cost_saved: "{0} 轮等到你回来", cost_wasted: "{0} 轮白挑", cost_pending: "{0} 轮挑灯中",
+      cost_pings: "挑灯 {0} 次", cost_rounds: "{0} 轮", cost_saved: "{0} 轮等到你回来", cost_ended: "{0} 轮收尾", cost_wasted: "{0} 轮白挑",
+      cost_replaced: "{0} 轮换键", cost_pending: "{0} 轮挑灯中",
       pending_note: "待定轮次的挑灯花费已计入；缓存过期或请求回来后确定结果。",
       coverage_note: "实际统计自 {0} 起。",
       compare_unpriced: "{0} 个请求或轮次没有模型价格，不计入金额。",
       other_clients: "其他客户端", other_clients_hint: "默认关闭。为 pi 等其他客户端挑灯，请求须带显式会话标识和缓存标记，条件见 README。开启后请确认挑灯读到了缓存、没有写入缓存。关闭后停止这些挑灯，请求原样交给 CPA。",
       n_pings: "{0} 次", n_ping: "{0} 次", n_rounds: "{0} 轮", n_round: "{0} 轮",
-      col_time: "最后挑灯", col_rounds: "挑灯", col_cost: "花费", col_saved: "省下", col_result: "结果",
+      col_time: "最后挑灯", col_rounds: "挑灯", col_cost: "挑灯花费", col_saved: "省下重写", col_net: "净省", col_result: "结果",
+      col_cost_hint: "挑灯按 API 价格计算的花费，含挑灯中的轮次。",
+      col_saved_hint: "缓存本该过期时你回来了，挑灯省下的缓存重写费用。",
+      col_net_hint: "省下重写减去挑灯花费，负数表示挑灯多花了钱。",
       col_round_time: "时间", col_round_pings: "本轮次数", col_read: "缓存读取",
       rounds_pings: "{0} · {1}", expand_hint: "点击查看每一轮",
       first_ping_hint: "范围内首次挑灯 {0}", context_hint: "最后一次挑灯的输入 token 数",
@@ -169,7 +176,17 @@
       price_stale: "最近一次更新价格失败：{0}",
       price_none: "尚未取得 API 价格，暂不显示金额。", price_error: "获取失败：{0}",
       result_saved: "省下", result_saved_amount: "省下 {0}", result_wasted: "白挑", result_pending: "挑灯中",
+      result_ended: "收尾", result_replaced: "换键",
       result_miss: "未命中", result_failed: "失败", result_count: "{0} {1}",
+      hint_saved: "缓存本该过期时你回来了，挑灯省下一次缓存重写。",
+      hint_pending: "最后一次挑灯不到 5 分钟，还没有结果。",
+      hint_ended: "对话最后一轮，挑灯后你没再回来。",
+      hint_replaced: "工具、系统提示或模型变了，对话换了新键继续，旧键停止。",
+      hint_wasted: "挑灯后你很快就回来了（距上个请求不到 5 分钟），不挑缓存也还在，这几次挑灯白花了。",
+      hint_miss: "最后一次挑灯没读到缓存，或写入了缓存。",
+      hint_failed: "最后一次挑灯请求失败。",
+      end_until: "挑满时长后停下", end_manual: "手动熄灭", end_superseded: "随主对话熄灭",
+      end_evicted: "跟踪的对话太多，被挤出", end_none: "缓存过期前没回来",
       round_back: "空闲 {0} 后回来",
       events_more: "再显示 {0} 个对话",
       seconds: "{0} 秒", minutes_seconds: "{0} 分 {1} 秒", minutes: "{0} 分钟", hours_minutes: "{0} 小时 {1} 分"
@@ -215,13 +232,16 @@
       events: "Ping history", range: "Range", range_24h: "24 hours", range_7d: "7 days", range_1m: "1 month", range_all: "All",
       range_label_24h: "Last 24 hours", range_label_7d: "Last 7 days", range_label_1m: "Last month", range_label_all: "All {0} days kept",
       savings: "Cost comparison",
-      totals_priced: "{0}: {1} in {2}, costing {3}; you came back in time for {4}, saving {5}; {6}.",
+      totals_priced: "{0}: {1} in {2}, ping cost {3}; you came back in time for {4}, saving {5} in rewrites; {6}.",
       totals_plain: "{0}: {1} in {2}; you came back in time for {3}.",
       net_saved: "net saving {0}", net_cost: "net cost {0}",
       totals_failed: "{0} failed.",
       totals_unpriced: "{0} with a model missing from the pricing page are shown without amounts.",
       plan_none: "No Wick", plan_wick: "Wick · Current", plan_hour: "1-hour cache",
-      cost_saves: "Wick saves {0} vs no Wick", cost_costs: "Wick costs {0} more vs no Wick",
+      cost_saves: "Wick saves {0} net", cost_costs: "Wick costs {0} more",
+      cost_net: "Rewrites saved {0} − ping cost {1}", cost_spent: " (of which {0})",
+      spent_ended: "ended {0}", spent_wasted: "wasted {0}", spent_replaced: "key changed {0}", spent_pending: "lit {0}",
+      spent_miss: "miss {0}", spent_failed: "failed {0}",
       percent_baseline: "vs no Wick: {0}",
       percent_less: "Wick {0}% cheaper", percent_more: "Wick {0}% more expensive",
       percent_equal: "Wick costs the same", percent_unavailable: "Wick comparison unavailable",
@@ -230,13 +250,17 @@
       percent_zero_baseline: "baseline cost is $0; percentages unavailable", percent_no_baseline: "no comparable cost data",
       wick_breakdown: "Cache {0} + pings {1}", none_breakdown: "Cache {0} + expired-cache rewrites {1}",
       hour_breakdown: "Cache at 1-hour write and read prices, without pings",
-      cost_pings: "{0} pings", cost_rounds: "{0} rounds", cost_saved: "{0} rounds you returned to", cost_wasted: "{0} wasted rounds", cost_pending: "{0} rounds still lit",
+      cost_pings: "{0} pings", cost_rounds: "{0} rounds", cost_saved: "{0} rounds you returned to", cost_ended: "{0} ended rounds", cost_wasted: "{0} wasted rounds",
+      cost_replaced: "{0} key-changed rounds", cost_pending: "{0} rounds still lit",
       pending_note: "Pending rounds include their ping costs; results settle when the cache expires or a request returns.",
       coverage_note: "Actual coverage starts {0}.",
       compare_unpriced: "{0} requests or rounds have no model price and are excluded from amounts.",
       other_clients: "Other clients", other_clients_hint: "Off by default. Keeps pi and other clients lit when their requests carry an explicit session ID and cache markers; the README lists the conditions. After turning it on, check that pings read the cache and write none. Turning it off stops their pings and passes their requests to CPA unchanged.",
       n_pings: "{0} pings", n_ping: "{0} ping", n_rounds: "{0} rounds", n_round: "{0} round",
-      col_time: "Last ping", col_rounds: "Pings", col_cost: "Cost", col_saved: "Saved", col_result: "Result",
+      col_time: "Last ping", col_rounds: "Pings", col_cost: "Ping cost", col_saved: "Rewrites saved", col_net: "Net", col_result: "Result",
+      col_cost_hint: "What the pings cost at API prices, including rounds still lit.",
+      col_saved_hint: "The cache rewrites the pings saved when you came back after the cache would have expired.",
+      col_net_hint: "Rewrites saved minus ping cost; negative when Wick cost more.",
       col_round_time: "Time", col_round_pings: "Pings", col_read: "Cache read",
       rounds_pings: "{0} · {1}", expand_hint: "Click to show each round",
       first_ping_hint: "First ping in the range {0}", context_hint: "Input tokens of the last ping",
@@ -246,7 +270,17 @@
       price_stale: "The last price update failed: {0}",
       price_none: "API prices are not available yet, so no amounts are shown.", price_error: "Fetching failed: {0}",
       result_saved: "Saved", result_saved_amount: "Saved {0}", result_wasted: "Wasted", result_pending: "Lit",
+      result_ended: "Ended", result_replaced: "Key changed",
       result_miss: "Miss", result_failed: "Failed", result_count: "{0} {1}",
+      hint_saved: "You came back after the cache would have expired; the pings saved a cache rewrite.",
+      hint_pending: "The last ping was less than 5 minutes ago; no result yet.",
+      hint_ended: "The last round of the conversation; you did not come back after the pings.",
+      hint_replaced: "The tools, system prompt or model changed; the conversation continued under a new key and the old key stopped.",
+      hint_wasted: "You came back soon after the pings (less than 5 minutes after the previous request); the cache was still there without them, so these pings were wasted.",
+      hint_miss: "The last ping read no cache or wrote to the cache.",
+      hint_failed: "The last ping request failed.",
+      end_until: "Stopped after the time kept lit", end_manual: "Snuffed out by hand", end_superseded: "Snuffed out with the main conversation",
+      end_evicted: "Dropped because too many conversations were kept", end_none: "You did not come back before the cache expired",
       round_back: "back after {0} idle",
       events_more: "Show {0} more conversations",
       seconds: "{0} s", minutes_seconds: "{0} min {1} s", minutes: "{0} min", hours_minutes: "{0} h {1} min"
@@ -437,8 +471,14 @@
     return "$" + Math.abs(v).toFixed(2);
   }
 
-  function badge(kind, text) {
-    return el("span", { class: "badge badge-" + kind }, [el("span", { class: "badge-dot" }), document.createTextNode(text)]);
+  // A signed amount, such as the net saving: negative with a minus sign.
+  function fmtSigned(v) {
+    if (v === null || v === undefined) return "—";
+    return (v < 0 ? "−" : "") + fmtMoney(v);
+  }
+
+  function badge(kind, text, title) {
+    return el("span", { class: "badge badge-" + kind, title: title }, [el("span", { class: "badge-dot" }), document.createTextNode(text)]);
   }
 
   // ---- Status ----
@@ -678,9 +718,28 @@
 
   // Round results, in the order their badges are shown, with the badge
   // style of each.
-  var RESULTS = [["saved", "success"], ["pending", "muted"], ["wasted", "warning"], ["miss", "warning"], ["failed", "failure"]];
+  var RESULTS = [["saved", "success"], ["pending", "muted"], ["ended", "muted"], ["replaced", "muted"],
+    ["wasted", "warning"], ["miss", "warning"], ["failed", "failure"]];
   var RESULT_KIND = {};
   RESULTS.forEach(function (r) { RESULT_KIND[r[0]] = r[1]; });
+  // The results other than saved, in the order the savings card lists the
+  // ping cost of each.
+  var SPENT = ["ended", "wasted", "replaced", "pending", "miss", "failed"];
+  // Why the pings of an ended round stopped, from Round.end; an empty end
+  // is a round whose cache expired, or one recorded without a stop event.
+  var ENDS = ["until", "manual", "superseded", "evicted"];
+
+  function endText(end) {
+    return translate(ENDS.indexOf(end) >= 0 ? "end_" + end : "end_none");
+  }
+
+  // The hover text of a result badge; a round's ended badge adds why its
+  // pings stopped.
+  function resultHint(result, round) {
+    var text = translate("hint_" + result);
+    if (result === "ended" && round) text += "\n" + endText(round.end) + (lang === "zh" ? "。" : ".");
+    return text;
+  }
 
   // Conversations of the history whose rounds are shown, by key.
   var expanded = {};
@@ -705,7 +764,7 @@
     var results = c.results || {};
     var parts = RESULTS.filter(function (r) { return results[r[0]] > 0; }).map(function (r) {
       var label = translate("result_" + r[0]);
-      return badge(r[1], results[r[0]] > 1 ? translate("result_count", label, results[r[0]]) : label);
+      return badge(r[1], results[r[0]] > 1 ? translate("result_count", label, results[r[0]]) : label, resultHint(r[0]));
     });
     if (c.last_error && c.detail && c.detail.length && c.detail[0].result === "failed") {
       parts.push(el("span", { class: "result-note", text: c.last_error }));
@@ -717,8 +776,9 @@
     var text = r.result === "saved" && r.saved !== undefined && r.saved !== null
       ? translate("result_saved_amount", fmtMoney(r.saved))
       : translate("result_" + r.result);
-    var parts = [badge(RESULT_KIND[r.result], text)];
+    var parts = [badge(RESULT_KIND[r.result] || "muted", text, resultHint(r.result, r))];
     if (r.return) parts.push(el("span", { class: "result-note", text: translate("round_back", fmtClockSpan(r.idle || 0)) }));
+    else if (r.result === "ended") parts.push(el("span", { class: "result-note", text: endText(r.end) }));
     return parts;
   }
 
@@ -745,7 +805,7 @@
         el("th", { class: "num", text: translate("col_context") }),
         el("th", { class: "num", text: translate("col_round_pings") }),
         el("th", { class: "num", text: translate("col_read") }),
-        el("th", { class: "num", text: translate("col_cost") }),
+        el("th", { class: "num", title: translate("col_cost_hint"), text: translate("col_cost") }),
         el("th", { text: translate("col_result") })
       ])]),
       body
@@ -769,6 +829,8 @@
     var saved = count(results.saved || 0, "n_round", "n_rounds");
     $("totals").hidden = compared;
     if (priced) {
+      // Net is the rewrites saved minus the cost of every priced round,
+      // pending ones included, as in the comparison's difference.
       $("totals").textContent = translate("totals_priced", range, pings, rounds, fmtMoney(t.cost || 0), saved, fmtMoney(t.saved || 0),
         translate((t.net || 0) >= 0 ? "net_saved" : "net_cost", fmtMoney(t.net || 0)));
     } else $("totals").textContent = translate("totals_plain", range, pings, rounds, saved);
@@ -806,6 +868,14 @@
       deltas = percentDelta(cmp.percent, "percent") + " · " + percentDelta(hourPercent, "hour_percent");
     }
     $("cost-deltas").textContent = translate("percent_baseline", deltas);
+    // The difference is the rewrites saved minus the ping cost; the ping
+    // cost of rounds that saved nothing follows, by result.
+    var costs = cmp.costs || {};
+    var spent = SPENT.filter(function (r) { return costs[r] > 0; }).map(function (r) {
+      return translate("spent_" + r, fmtMoney(costs[r]));
+    });
+    $("cost-net").textContent = translate("cost_net", fmtMoney(cmp.saved || 0), fmtMoney(cmp.pings || 0)) +
+      (spent.length ? translate("cost_spent", spent.join(" · ")) : "");
     var max = Math.max(cmp.wick || 0, cmp.hour || 0, cmp.none || 0);
     function bar(label, cost, detail, primary) {
       body.appendChild(el("div", { class: "cost-row" + (primary ? " cost-current" : "") }, [
@@ -819,7 +889,8 @@
     bar("plan_hour", cmp.hour || 0, translate("hour_breakdown"));
     bar("plan_none", cmp.none || 0, translate("none_breakdown", fmtMoney(cmp.cache || 0), fmtMoney(cmp.saved || 0)));
     var stats = [], results = cmp.results || {};
-    [["cost_pings", cmp.ping_count], ["cost_rounds", cmp.rounds], ["cost_saved", results.saved], ["cost_wasted", results.wasted], ["cost_pending", results.pending]].forEach(function (item) {
+    [["cost_pings", cmp.ping_count], ["cost_rounds", cmp.rounds], ["cost_saved", results.saved], ["cost_ended", results.ended],
+      ["cost_wasted", results.wasted], ["cost_replaced", results.replaced], ["cost_pending", results.pending]].forEach(function (item) {
       if (item[1]) stats.push(translate(item[0], item[1]));
     });
     $("cost-stats").textContent = stats.join(" · ");
@@ -849,7 +920,7 @@
       var id = historyId(c);
       var open = !!expanded[id];
       var last = parseTime(c.last), first = parseTime(c.first);
-      var detail = open ? el("tr", { class: "detail-row" }, [el("td", { colspan: "8" }, [roundsTable(c)])]) : null;
+      var detail = open ? el("tr", { class: "detail-row" }, [el("td", { colspan: "9" }, [roundsTable(c)])]) : null;
       function toggle() {
         if (expanded[id]) delete expanded[id]; else expanded[id] = true;
         renderEvents();
@@ -879,6 +950,7 @@
           : el("td", { class: "num muted", text: "—" }),
         el("td", { class: "num", text: hasAmounts ? fmtMoney(c.cost || 0) : "—" }),
         el("td", { class: "num", text: hasAmounts && c.saved > 0 ? fmtMoney(c.saved) : "—" }),
+        el("td", { class: "num" + (hasAmounts && c.net < 0 ? " net-negative" : ""), text: hasAmounts ? fmtSigned(c.net || 0) : "—" }),
         el("td", { class: "result" }, historyResult(c))
       ]));
       if (detail) body.appendChild(detail);
