@@ -88,8 +88,8 @@ func TestGroup(t *testing.T) {
 		a.Context != 141 || a.Model != "m2" || !a.First.Equal(now) || !a.Last.Equal(now.Add(9*time.Minute)) || a.LastStopped != "cache_miss" {
 		t.Fatalf("conversation a %+v", a)
 	}
-	// A round with no return is wasted once its cache expires.
-	if r := a.Totals.Results; r[ResultMiss] != 1 || r[ResultWasted] != 1 {
+	// A round with no return ends once its cache expires.
+	if r := a.Totals.Results; r[ResultMiss] != 1 || r[ResultEnded] != 1 {
 		t.Fatalf("results %v", r)
 	}
 	if b := got[1]; b.Failed != 1 || b.LastError != "boom" || b.Context != 0 || b.Totals.Results[ResultFailed] != 1 {
@@ -110,7 +110,7 @@ func TestRoundsAndAmounts(t *testing.T) {
 	events := []keepalive.Event{
 		// Saved: back within the cache's lifetime after the last ping.
 		ping(-60, 1, hit), ping(-55, 2, hit), back(-52, true),
-		// Wasted: no return within five minutes of the last ping.
+		// Ended: no return within five minutes of the last ping.
 		ping(-40, 1, hit),
 		// Wasted: back too early.
 		ping(-30, 1, hit), back(-29, false),
@@ -129,7 +129,7 @@ func TestRoundsAndAmounts(t *testing.T) {
 		t.Fatalf("groups %+v", got)
 	}
 	a := got[0]
-	want := []string{ResultPending, ResultMiss, ResultWasted, ResultWasted, ResultSaved}
+	want := []string{ResultPending, ResultMiss, ResultWasted, ResultEnded, ResultSaved}
 	if len(a.Detail) != len(want) {
 		t.Fatalf("rounds %+v", a.Detail)
 	}
@@ -142,15 +142,18 @@ func TestRoundsAndAmounts(t *testing.T) {
 	if saved.Pings != 2 || saved.Return == nil || saved.Idle != 600 || saved.Saved == nil || !near(*saved.Saved, 0.48) || !near(*saved.Cost, 0.04) {
 		t.Fatalf("saved round %+v", saved)
 	}
-	if a.Saved != *saved.Saved || !near(a.Cost, 0.6) || !near(a.Net, 0.48-0.58) || a.Unpriced != 0 {
+	if a.Saved != *saved.Saved || !near(a.Cost, 0.6) || !near(a.Net, 0.48-0.6) || a.Unpriced != 0 {
 		t.Fatalf("totals %+v", a.Totals)
 	}
 	if b := got[1]; b.Detail[0].Cost != nil || b.Unpriced != 1 || b.Cost != 0 {
 		t.Fatalf("unpriced conversation %+v", b)
 	}
 	total := Total(got)
-	if total.Rounds != 6 || total.Results[ResultWasted] != 3 || total.Unpriced != 1 || !near(total.Net, a.Net) {
+	if total.Rounds != 6 || total.Results[ResultWasted] != 1 || total.Results[ResultEnded] != 2 || total.Unpriced != 1 || !near(total.Net, a.Net) {
 		t.Fatalf("total %+v", total)
+	}
+	if len(a.Costs) != 5 || !near(a.Costs[ResultSaved], 0.04) || !near(a.Costs[ResultEnded], 0.02) || !near(a.Costs[ResultWasted], 0.02) || !near(a.Costs[ResultPending], 0.02) || !near(a.Costs[ResultMiss], 0.5) || !near(total.Costs[ResultEnded], a.Costs[ResultEnded]) {
+		t.Fatalf("cost groups: conversation=%v total=%v", a.Costs, total.Costs)
 	}
 	// Without prices there are no amounts, and no round counts as unpriced.
 	noPrices := Group(events, now, nil)

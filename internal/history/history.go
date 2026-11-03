@@ -215,10 +215,13 @@ const (
 	// successful ping was alive, after the cache would have expired
 	// without the pings.
 	ResultSaved = "saved"
-	// ResultWasted: no request came back within the cache's lifetime after
-	// the last successful ping, or it came back before the cache would have
-	// expired anyway.
+	// ResultWasted: the request came back before the cache would have
+	// expired without pings.
 	ResultWasted = "wasted"
+	// ResultEnded: no return, and the round stopped or its cache expired.
+	ResultEnded = "ended"
+	// ResultReplaced: the conversation continued under a different key.
+	ResultReplaced = "replaced"
 	// ResultPending: the cache of the last successful ping is alive and no
 	// request has come back yet.
 	ResultPending = "pending"
@@ -243,10 +246,12 @@ type Totals struct {
 	Rounds              int   `json:"rounds"`
 	// Results counts the rounds by result.
 	Results map[string]int `json:"results"`
+	// Costs sums priced ping costs by round result, including pending rounds.
+	Costs map[string]float64 `json:"costs"`
 	// Cost is the price of the pings and Saved the cache writes saved, in
-	// US dollars at API prices. Net is Saved minus the cost of the rounds
-	// with a result, leaving out pending ones. Rounds whose model has no
-	// price are left out of all three and counted in Unpriced.
+	// US dollars at API prices. Net is Saved minus Cost, including pending
+	// rounds. Rounds whose model has no price are left out of all three
+	// and counted in Unpriced.
 	Cost     float64 `json:"cost"`
 	Saved    float64 `json:"saved"`
 	Net      float64 `json:"net"`
@@ -273,9 +278,11 @@ func (t *Totals) addRound(r Round, priced bool) {
 	}
 	t.Cost += *r.Cost
 	t.Saved += saved
-	if r.Result != ResultPending {
-		t.Net += saved - *r.Cost
+	t.Net = t.Saved - t.Cost
+	if t.Costs == nil {
+		t.Costs = make(map[string]float64)
 	}
+	t.Costs[r.Result] += *r.Cost
 }
 
 func (t *Totals) add(o Totals) {
@@ -290,15 +297,21 @@ func (t *Totals) add(o Totals) {
 	for k, v := range o.Results {
 		t.Results[k] += v
 	}
+	if t.Costs == nil {
+		t.Costs = make(map[string]float64)
+	}
+	for k, v := range o.Costs {
+		t.Costs[k] += v
+	}
 	t.Cost += o.Cost
 	t.Saved += o.Saved
-	t.Net += o.Net
+	t.Net = t.Saved - t.Cost
 	t.Unpriced += o.Unpriced
 }
 
 // Total sums the totals of conversations.
 func Total(convs []Conversation) Totals {
-	t := Totals{Results: map[string]int{}}
+	t := Totals{Results: map[string]int{}, Costs: map[string]float64{}}
 	for _, c := range convs {
 		t.add(c.Totals)
 	}
@@ -316,6 +329,8 @@ type Round struct {
 	Context         int64  `json:"context"`
 	CacheReadTokens int64  `json:"cache_read_tokens"`
 	Result          string `json:"result"`
+	// End is until, manual, replaced, superseded or evicted, when recorded.
+	End string `json:"end,omitempty"`
 	// Return is when the request that ended the round came, and Idle the
 	// seconds from the request before it.
 	Return *time.Time `json:"return,omitempty"`
@@ -367,7 +382,8 @@ type Conversation struct {
 //
 // A ping numbered no higher than the one before it starts a new round, as
 // does the first ping after a return, so that rounds are rebuilt from any
-// history. A return without a ping of its round in the range is left out.
+// history. A return or stop without a ping of its round in the range is
+// left out. A stop marks the current round without closing it.
 func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Conversation {
 	index := make(map[string]int)
 	var out []Conversation
@@ -378,6 +394,15 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 			continue
 		}
 		i, ok := index[ev.Key]
+		if ev.Kind == keepalive.KindStop {
+			if ok && open[i] {
+				switch ev.Stopped {
+				case "manual", "replaced", "superseded", "evicted":
+					out[i].Detail[len(out[i].Detail)-1].End = ev.Stopped
+				}
+			}
+			continue
+		}
 		if ev.Kind == keepalive.KindReturn {
 			if ok && open[i] {
 				c := &out[i]
@@ -392,7 +417,7 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 		if !ok {
 			i = len(out)
 			index[ev.Key] = i
-			out = append(out, Conversation{Key: ev.Key, Session: ev.Session, First: ev.Time})
+			out = append(out, Conversation{Key: ev.Key, Session: ev.Session, First: ev.Time, Totals: Totals{Costs: map[string]float64{}}})
 		}
 		c := &out[i]
 		c.Model, c.Agent, c.Client, c.Cwd, c.Prompt = ev.Model, ev.Agent, ev.Client, ev.Cwd, ev.Prompt
@@ -404,6 +429,10 @@ func Group(events []keepalive.Event, now time.Time, prices *pricing.Table) []Con
 		}
 		r := &c.Detail[len(c.Detail)-1]
 		r.Last, r.Model, r.lastPing = ev.Time, ev.Model, ev.Ping
+		r.End = ""
+		if ev.Stopped == "until" {
+			r.End = "until"
+		}
 		r.Pings++
 		switch {
 		case ev.Error != "":
@@ -456,10 +485,14 @@ func (r *Round) judge(now time.Time, prices *pricing.Table) {
 		r.Result = ResultWasted
 	case r.last != "":
 		r.Result = r.last
+	case r.End == "replaced":
+		r.Result = ResultReplaced
+	case r.End == "manual" || r.End == "superseded" || r.End == "evicted":
+		r.Result = ResultEnded
 	case now.Before(r.lastRead.Add(cacheTTL)):
 		r.Result = ResultPending
 	default:
-		r.Result = ResultWasted
+		r.Result = ResultEnded
 	}
 	if prices == nil || !r.priced {
 		return
@@ -493,6 +526,8 @@ type Comparison struct {
 	Failed    int            `json:"failed"`
 	Rounds    int            `json:"rounds"`
 	Results   map[string]int `json:"results"`
+	// Costs sums priced ping costs by result over the comparison's rounds.
+	Costs map[string]float64 `json:"costs"`
 	// Wick and None are full cache costs. Differences are positive for savings.
 	Wick           float64  `json:"wick"`
 	None           float64  `json:"none"`
@@ -521,7 +556,7 @@ type Comparison struct {
 // to a cache kept lit by Wick would find the 1-hour cache expired and write
 // the context again.
 func Compare(events []keepalive.Event, convs []Conversation, prices *pricing.Table) Comparison {
-	var out Comparison
+	out := Comparison{Costs: map[string]float64{}}
 	if prices == nil {
 		return out
 	}
@@ -572,6 +607,7 @@ func Compare(events []keepalive.Event, convs []Conversation, prices *pricing.Tab
 				continue
 			}
 			out.Pings += *r.Cost
+			out.Costs[r.Result] += *r.Cost
 			if r.Saved == nil {
 				continue
 			}
@@ -584,7 +620,7 @@ func Compare(events []keepalive.Event, convs []Conversation, prices *pricing.Tab
 		}
 	}
 	out.Wick, out.None = out.Cache+out.Pings, out.Cache+out.Saved
-	out.Difference = out.None - out.Wick
+	out.Difference = out.Saved - out.Pings
 	out.HourDifference = out.Hour - out.Wick
 	if out.None > 0 {
 		percent := out.Difference / out.None * 100
