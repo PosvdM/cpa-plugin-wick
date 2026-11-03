@@ -132,9 +132,5 @@ func (m *Manager) Usage(rec pluginapi.UsageRecord) {
 		m.seen[a.key] = s
 	}
 	m.mu.Unlock()
-	if m.recorder != nil {
-		if err := m.recorder.Append(ev); err != nil {
-			m.host.Log("warn", "wick: write request usage: "+err.Error(), nil)
-		}
-	}
+	m.record(ev)
 }
