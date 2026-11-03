@@ -328,10 +328,10 @@ test("savings card: net headline, saved minus cost, ping cost by result and roun
     costs: { saved: 0.1, ended: 0.8, wasted: 0.3, replaced: 0, pending: 0.14 },
   };
   const expected = {
-    zh: ["挑灯净省 $4.98", "省下重写 $6.32 − 挑灯花费 $1.34（其中收尾 $0.80 · 白挑 $0.30 · 挑灯中 $0.14）",
+    zh: ["挑灯净省 $4.98", "省下重写 $6.32 − 挑灯花费 $1.34（其中省下 $0.10 · 收尾 $0.80 · 白挑 $0.30 · 挑灯中 $0.14）",
       "挑灯 40 次 · 11 轮 · 3 轮等到你回来 · 4 轮收尾 · 2 轮白挑 · 1 轮换键 · 1 轮挑灯中"],
-    en: ["Wick saves $4.98 net", "Rewrites saved $6.32 − ping cost $1.34 (of which ended $0.80 · wasted $0.30 · lit $0.14)",
-      "40 pings · 11 rounds · 3 rounds you returned to · 4 ended rounds · 2 wasted rounds · 1 key-changed rounds · 1 rounds still lit"],
+    en: ["Wick saves $4.98 net", "Rewrites saved $6.32 − ping cost $1.34 (of which saved $0.10 · ended $0.80 · wasted $0.30 · lit $0.14)",
+      "40 pings · 11 rounds · 3 rounds you returned to · 4 ended rounds · 2 wasted rounds · 1 key-changed round · 1 round still lit"],
   };
   for (const language of ["zh", "en"]) {
     const ui = page(language);
@@ -462,4 +462,26 @@ test("rounds: superseded and evicted ends", () => {
   ui.history(data, ["k1"]);
   const notes = byClass(ui.get("events").children[1], "result-note").map(text);
   assert.deepEqual(notes, ["随主对话熄灭", "跟踪的对话太多，被挤出"]);
+});
+
+test("savings card: the ping cost by result adds up to the total", async () => {
+  const costs = { saved: 0.1, ended: 0.8, wasted: 0.3, replaced: 0.05, pending: 0.14, miss: 0.02, failed: 0.01 };
+  const pings = Object.values(costs).reduce((a, b) => a + b, 0);
+  const ui = page("zh");
+  await ui.load(response({ ...comparison(1.42, 0.9, 6.37), pings, saved: 6.32, costs }));
+  assert.equal(ui.get("cost-net").textContent,
+    "省下重写 $6.32 − 挑灯花费 $1.42（其中省下 $0.10 · 收尾 $0.80 · 白挑 $0.30 · 换键 $0.05 · 挑灯中 $0.14 · 未命中 $0.02 · 失败 $0.01）");
+  const listed = ui.get("cost-net").textContent.match(/\$\d+\.\d+/g).slice(2).map((v) => Number(v.slice(1)));
+  assert.equal(listed.reduce((a, b) => a + b, 0).toFixed(2), pings.toFixed(2));
+});
+
+test("savings card: English counts use the singular for one", async () => {
+  const ui = page("en");
+  const results = (n) => ({ saved: n, ended: n, wasted: n, replaced: n, pending: n });
+  await ui.load(response({ ...comparison(0.14, 0.07, 0.28), ping_count: 1, rounds: 1, results: results(1) }));
+  assert.equal(ui.get("cost-stats").textContent,
+    "1 ping · 1 round · 1 round you returned to · 1 ended round · 1 wasted round · 1 key-changed round · 1 round still lit");
+  await ui.load(response({ ...comparison(0.14, 0.07, 0.28), ping_count: 2, rounds: 2, results: results(2) }));
+  assert.equal(ui.get("cost-stats").textContent,
+    "2 pings · 2 rounds · 2 rounds you returned to · 2 ended rounds · 2 wasted rounds · 2 key-changed rounds · 2 rounds still lit");
 });

@@ -146,7 +146,7 @@
       plan_none: "不挑灯", plan_wick: "挑灯（当前）", plan_hour: "1 小时缓存",
       cost_saves: "挑灯净省 {0}", cost_costs: "挑灯多花 {0}",
       cost_net: "省下重写 {0} − 挑灯花费 {1}", cost_spent: "（其中{0}）",
-      spent_ended: "收尾 {0}", spent_wasted: "白挑 {0}", spent_replaced: "换键 {0}", spent_pending: "挑灯中 {0}",
+      spent_saved: "省下 {0}", spent_ended: "收尾 {0}", spent_wasted: "白挑 {0}", spent_replaced: "换键 {0}", spent_pending: "挑灯中 {0}",
       spent_miss: "未命中 {0}", spent_failed: "失败 {0}",
       percent_baseline: "相对不挑灯：{0}",
       percent_less: "挑灯便宜 {0}%", percent_more: "挑灯贵 {0}%",
@@ -240,7 +240,7 @@
       plan_none: "No Wick", plan_wick: "Wick · Current", plan_hour: "1-hour cache",
       cost_saves: "Wick saves {0} net", cost_costs: "Wick costs {0} more",
       cost_net: "Rewrites saved {0} − ping cost {1}", cost_spent: " (of which {0})",
-      spent_ended: "ended {0}", spent_wasted: "wasted {0}", spent_replaced: "key changed {0}", spent_pending: "lit {0}",
+      spent_saved: "saved {0}", spent_ended: "ended {0}", spent_wasted: "wasted {0}", spent_replaced: "key changed {0}", spent_pending: "lit {0}",
       spent_miss: "miss {0}", spent_failed: "failed {0}",
       percent_baseline: "vs no Wick: {0}",
       percent_less: "Wick {0}% cheaper", percent_more: "Wick {0}% more expensive",
@@ -252,6 +252,8 @@
       hour_breakdown: "Cache at 1-hour write and read prices, without pings",
       cost_pings: "{0} pings", cost_rounds: "{0} rounds", cost_saved: "{0} rounds you returned to", cost_ended: "{0} ended rounds", cost_wasted: "{0} wasted rounds",
       cost_replaced: "{0} key-changed rounds", cost_pending: "{0} rounds still lit",
+      cost_pings_one: "{0} ping", cost_rounds_one: "{0} round", cost_saved_one: "{0} round you returned to", cost_ended_one: "{0} ended round",
+      cost_wasted_one: "{0} wasted round", cost_replaced_one: "{0} key-changed round", cost_pending_one: "{0} round still lit",
       pending_note: "Pending rounds include their ping costs; results settle when the cache expires or a request returns.",
       coverage_note: "Actual coverage starts {0}.",
       compare_unpriced: "{0} requests or rounds have no model price and are excluded from amounts.",
@@ -722,9 +724,8 @@
     ["wasted", "warning"], ["miss", "warning"], ["failed", "failure"]];
   var RESULT_KIND = {};
   RESULTS.forEach(function (r) { RESULT_KIND[r[0]] = r[1]; });
-  // The results other than saved, in the order the savings card lists the
-  // ping cost of each.
-  var SPENT = ["ended", "wasted", "replaced", "pending", "miss", "failed"];
+  // The results in the order the savings card lists the ping cost of each.
+  var SPENT = ["saved", "ended", "wasted", "replaced", "pending", "miss", "failed"];
   // Why the pings of an ended round stopped, from Round.end; an empty end
   // is a round whose cache expired, or one recorded without a stop event.
   var ENDS = ["until", "manual", "superseded", "evicted"];
@@ -869,7 +870,7 @@
     }
     $("cost-deltas").textContent = translate("percent_baseline", deltas);
     // The difference is the rewrites saved minus the ping cost; the ping
-    // cost of rounds that saved nothing follows, by result.
+    // cost follows, split by result.
     var costs = cmp.costs || {};
     var spent = SPENT.filter(function (r) { return costs[r] > 0; }).map(function (r) {
       return translate("spent_" + r, fmtMoney(costs[r]));
@@ -891,7 +892,9 @@
     var stats = [], results = cmp.results || {};
     [["cost_pings", cmp.ping_count], ["cost_rounds", cmp.rounds], ["cost_saved", results.saved], ["cost_ended", results.ended],
       ["cost_wasted", results.wasted], ["cost_replaced", results.replaced], ["cost_pending", results.pending]].forEach(function (item) {
-      if (item[1]) stats.push(translate(item[0], item[1]));
+      // A language without a "_one" text uses the same text for one.
+      var name = item[1] === 1 && I18N[lang][item[0] + "_one"] !== undefined ? item[0] + "_one" : item[0];
+      if (item[1]) stats.push(translate(name, item[1]));
     });
     $("cost-stats").textContent = stats.join(" · ");
   }
