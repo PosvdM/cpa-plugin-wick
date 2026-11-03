@@ -1011,7 +1011,8 @@
     clockOffset = server ? server.getTime() - Date.now() : 0;
     renderStatus();
     renderDurationHint();
-    // The history changes only with a new ping or return.
+    // last_event changes after every event appended to the history: a
+    // ping, return, stop or request usage.
     if (status.last_event !== lastEventSeen) {
       lastEventSeen = status.last_event;
       loadHistory().catch(function () {});
