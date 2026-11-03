@@ -41,6 +41,7 @@ func TestStopEvents(t *testing.T) {
 				if skip != "" {
 					t.Fatal(skip)
 				}
+				beforeStop := m.Status().LastEvent
 				switch reason {
 				case stopManual:
 					if !m.StopConversation(short(req.Key)) || m.StopConversation(short(req.Key)) {
@@ -80,8 +81,8 @@ func TestStopEvents(t *testing.T) {
 					ev.Client != req.Client || ev.Cwd != req.Cwd || ev.Prompt != req.Prompt || !ev.Time.Equal(clock.Now()) {
 					t.Fatalf("stop %+v does not describe %+v", ev, req)
 				}
-				if !m.Status().LastEvent.Equal(ev.Time) {
-					t.Fatal("stop did not update last_event")
+				if marker := m.Status().LastEvent; !marker.After(beforeStop) || marker.Before(ev.Time) {
+					t.Fatal("stop did not publish a newer refresh marker")
 				}
 				if m.convs[req.Key] != nil {
 					t.Fatal("stopped conversation remains tracked")

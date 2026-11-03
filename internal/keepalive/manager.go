@@ -105,8 +105,8 @@ type Manager struct {
 	// gen numbers schedules across all conversations, so that a ping still
 	// in flight for a removed conversation cannot match a new one.
 	gen uint64
-	// lastEvent is the time of the latest ping, return or stop event, so
-	// that the page knows when to reload the history.
+	// lastEvent is a strictly increasing timestamp published after each
+	// successful append, so that the page reloads even for late events.
 	lastEvent time.Time
 	// store saves the conversations so that they survive a restart of CPA.
 	// restored is set once the saved conversations have been loaded.
@@ -438,9 +438,6 @@ func roundOf(c *conversation) round {
 func (m *Manager) returnLocked(req request, now time.Time, r round) Event {
 	idle := now.Sub(r.lastRequest)
 	saved := now.Sub(r.lastRead) < cacheTTL && idle >= cacheTTL
-	if now.After(m.lastEvent) {
-		m.lastEvent = now
-	}
 	ev := Event{
 		Time:    now,
 		Session: short(req.Session),
@@ -683,9 +680,6 @@ func (m *Manager) stopEventLocked(c *conversation, reason string) []Event {
 		return nil
 	}
 	now := m.clock.Now()
-	if now.After(m.lastEvent) {
-		m.lastEvent = now
-	}
 	return []Event{{
 		Time: now, Session: short(c.req.Session), Key: short(c.req.Key),
 		Model: c.req.Model, Agent: c.req.Agent != "", Client: c.req.Client,
@@ -694,15 +688,24 @@ func (m *Manager) stopEventLocked(c *conversation, reason string) []Event {
 	}}
 }
 
-// record appends events without holding the manager lock.
+// record appends events without holding the manager lock, then publishes
+// a strictly increasing refresh marker after each successful append.
 func (m *Manager) record(events ...Event) {
 	if m.recorder == nil {
 		return
 	}
 	for _, event := range events {
 		if err := m.recorder.Append(event); err != nil {
-			m.host.Log("warn", "wick: write ping history: "+err.Error(), nil)
+			m.host.Log("warn", "wick: write history: "+err.Error(), nil)
+			continue
 		}
+		m.mu.Lock()
+		now := m.clock.Now().UTC()
+		if !now.After(m.lastEvent) {
+			now = m.lastEvent.Add(time.Nanosecond)
+		}
+		m.lastEvent = now
+		m.mu.Unlock()
 	}
 }
 
@@ -820,9 +823,6 @@ func (m *Manager) finishPing(key string, gen uint64, req request, n int, start t
 		Prompt:  truncate(req.Prompt, maxEventPromptRunes),
 		Ping:    n,
 		Usage:   usage,
-	}
-	if start.After(m.lastEvent) {
-		m.lastEvent = start
 	}
 	current, ok := m.convs[key]
 	stillCurrent := ok && current.gen == gen && !m.stopped
@@ -983,8 +983,8 @@ type ConversationStatus struct {
 type Status struct {
 	Config        config.Config        `json:"config"`
 	Conversations []ConversationStatus `json:"conversations"`
-	// LastEvent is the time of the latest ping, return or stop recorded since the
-	// plugin was loaded.
+	// LastEvent is a strictly increasing refresh marker for successful
+	// history appends since the plugin was loaded, encoded as a timestamp.
 	LastEvent time.Time `json:"last_event"`
 }
 
