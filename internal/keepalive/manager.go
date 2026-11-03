@@ -52,6 +52,9 @@ const (
 // KindReturn marks the event written when a request ends a round of pings.
 const KindReturn = "return"
 
+// KindStop marks a round stopped manually, replaced, superseded or evicted.
+const KindStop = "stop"
+
 // Clock abstracts time so that tests can drive the scheduler.
 type Clock interface {
 	Now() time.Time
@@ -102,8 +105,8 @@ type Manager struct {
 	// gen numbers schedules across all conversations, so that a ping still
 	// in flight for a removed conversation cannot match a new one.
 	gen uint64
-	// lastEvent is the time of the latest event recorded, a ping or a
-	// return, so that the page knows when to reload the history.
+	// lastEvent is a strictly increasing timestamp published after each
+	// successful append, so that the page reloads even for late events.
 	lastEvent time.Time
 	// store saves the conversations so that they survive a restart of CPA.
 	// restored is set once the saved conversations have been loaded.
@@ -146,7 +149,8 @@ type conversation struct {
 }
 
 // Event is the result of one ping; with Kind KindReturn, the request that
-// ended a round of pings; with Kind KindRequest, the usage of a request.
+// ended a round of pings; with Kind KindRequest, the usage of a request;
+// with Kind KindStop, the reason a round stopped and its ping count.
 type Event struct {
 	Time    time.Time `json:"time"`
 	Session string    `json:"session"`
@@ -169,7 +173,8 @@ type Event struct {
 	Saved   bool  `json:"saved,omitempty"`
 	Idle    int64 `json:"idle,omitempty"`
 	Context int64 `json:"context,omitempty"`
-	Pings   int   `json:"pings,omitempty"`
+	// Pings also describes the round stopped by a KindStop event.
+	Pings int `json:"pings,omitempty"`
 }
 
 // New creates a Manager with the default config.
@@ -353,36 +358,28 @@ func (m *Manager) Observe(in pluginapi.RequestInterceptRequest) []byte {
 	}
 	// Taken under the lock, so that a return is never earlier than the
 	// start of a ping counted before it.
-	ret, returned := m.observeLocked(req, m.clock.Now())
+	events := m.observeLocked(req, m.clock.Now())
 	m.mu.Unlock()
-	// A short line appended to a file, only when a request ends a round of
-	// pings, that is after at least one idle interval.
-	if returned && m.recorder != nil {
-		if err := m.recorder.Append(ret); err != nil {
-			m.host.Log("warn", "wick: write ping history: "+err.Error(), nil)
-		}
-	}
+	m.record(events...)
 	if req.Other {
 		return req.Body
 	}
 	return nil
 }
 
-// observeLocked tracks req and returns the event to record when req ends a
-// round of pings.
-func (m *Manager) observeLocked(req request, now time.Time) (Event, bool) {
+// observeLocked tracks req and returns its return and stop events.
+func (m *Manager) observeLocked(req request, now time.Time) []Event {
 	if m.stopped || m.defaultMinutesLocked(req) == 0 {
-		return Event{}, false
+		return nil
 	}
 	m.pruneEndedLocked(now)
-	var ret Event
-	returned := false
+	var events []Event
 	c, ok := m.convs[req.Key]
 	m.awaitLocked(req, now, c)
 	if r, found := m.ended[req.Key]; found && !ok {
-		ret, returned = m.returnLocked(req, now, r), true
+		events = append(events, m.returnLocked(req, now, r))
 	} else if ok && c.pings > 0 {
-		ret, returned = m.returnLocked(req, now, roundOf(c)), true
+		events = append(events, m.returnLocked(req, now, roundOf(c)))
 	}
 	delete(m.ended, req.Key)
 	if ok {
@@ -393,6 +390,7 @@ func (m *Manager) observeLocked(req request, now time.Time) (Event, bool) {
 		// treated as the main conversation.
 		for key, other := range m.convs {
 			if req.Agent == "" && key != req.Key && other.req.Session == req.Session && other.req.CallerScope == req.CallerScope && other.firstSeen.After(c.lastRequest) {
+				events = append(events, m.stopEventLocked(other, stopSuperseded)...)
 				m.removeLocked(key)
 				m.logLocked("debug", "subagent finished, keep-alive stopped", other.req, other.pings, stopSuperseded)
 			}
@@ -402,9 +400,9 @@ func (m *Manager) observeLocked(req request, now time.Time) (Event, bool) {
 		}
 		c.minutes = 0
 	} else {
-		m.replaceLocked(req)
+		events = append(events, m.replaceLocked(req)...)
 		if len(m.convs) >= maxConversations {
-			m.evictOldestLocked()
+			events = append(events, m.evictOldestLocked()...)
 		}
 		c = &conversation{firstSeen: now}
 		m.convs[req.Key] = c
@@ -418,10 +416,10 @@ func (m *Manager) observeLocked(req request, now time.Time) (Event, bool) {
 	// A duration of up to 5 minutes needs no pings.
 	if m.doneLocked(c) {
 		m.removeLocked(req.Key)
-		return ret, returned
+		return events
 	}
 	m.scheduleLocked(req.Key, c, now)
-	return ret, returned
+	return events
 }
 
 // roundOf returns the round of pings of c since its last request.
@@ -440,9 +438,6 @@ func roundOf(c *conversation) round {
 func (m *Manager) returnLocked(req request, now time.Time, r round) Event {
 	idle := now.Sub(r.lastRequest)
 	saved := now.Sub(r.lastRead) < cacheTTL && idle >= cacheTTL
-	if now.After(m.lastEvent) {
-		m.lastEvent = now
-	}
 	ev := Event{
 		Time:    now,
 		Session: short(req.Session),
@@ -488,16 +483,19 @@ func (m *Manager) pruneEndedLocked(now time.Time) {
 // stopSubagentsLocked snuffs out subagents started while a replaced main
 // conversation waited for its last response, within the same caller scope
 // and session. A different main key is not treated as a subagent.
-func (m *Manager) stopSubagentsLocked(req request, lastRequest time.Time) {
+func (m *Manager) stopSubagentsLocked(req request, lastRequest time.Time) []Event {
 	if req.Agent != "" {
-		return
+		return nil
 	}
+	var events []Event
 	for key, other := range m.convs {
 		if key != req.Key && other.req.CallerScope == req.CallerScope && other.req.Session == req.Session && other.req.Agent != "" && other.firstSeen.After(lastRequest) {
+			events = append(events, m.stopEventLocked(other, stopSuperseded)...)
 			m.removeLocked(key)
 			m.logLocked("debug", "subagent finished, keep-alive stopped", other.req, other.pings, stopSuperseded)
 		}
 	}
+	return events
 }
 
 // replaceLocked snuffs out conversations continued or rewound under a new
@@ -507,7 +505,8 @@ func (m *Manager) stopSubagentsLocked(req request, lastRequest time.Time) {
 // markers. A rewind needs a shared message and user input on both sides of
 // the divergence; tool results and divergence at the first message do not
 // identify one.
-func (m *Manager) replaceLocked(req request) {
+func (m *Manager) replaceLocked(req request) []Event {
+	var events []Event
 	var rawMessages []gjson.Result
 	var messages []string
 	parsed := false
@@ -532,14 +531,16 @@ func (m *Manager) replaceLocked(req request) {
 			}
 			message = "conversation rewound and resent, keep-alive stopped"
 		}
+		events = append(events, m.stopEventLocked(other, stopReplaced)...)
 		m.removeLocked(key)
 		m.logLocked("info", message, other.req, other.pings, stopReplaced)
 		replaced = append(replaced, other)
 	}
 	// Finish matching old keys before removing subagents from the same map.
 	for _, other := range replaced {
-		m.stopSubagentsLocked(req, other.lastRequest)
+		events = append(events, m.stopSubagentsLocked(req, other.lastRequest)...)
 	}
+	return events
 }
 
 // continues reports whether messages are at least as long as before and
@@ -657,16 +658,55 @@ func (m *Manager) SetDuration(key string, minutes int) error {
 // schedule the next one. It reports whether a conversation was found.
 func (m *Manager) StopConversation(key string) bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var events []Event
 	found := false
 	for full, c := range m.convs {
 		if short(full) == key {
+			events = append(events, m.stopEventLocked(c, stopManual)...)
 			m.retireLocked(full, c)
 			m.logLocked("info", "keep-alive stopped from the management page", c.req, c.pings, stopManual)
 			found = true
 		}
 	}
+	m.mu.Unlock()
+	m.record(events...)
 	return found
+}
+
+// stopEventLocked records why a round with pings stopped. Callers remove
+// the conversation before unlocking and append the event outside the lock.
+func (m *Manager) stopEventLocked(c *conversation, reason string) []Event {
+	if c.pings == 0 {
+		return nil
+	}
+	now := m.clock.Now()
+	return []Event{{
+		Time: now, Session: short(c.req.Session), Key: short(c.req.Key),
+		Model: c.req.Model, Agent: c.req.Agent != "", Client: c.req.Client,
+		Cwd: c.req.Cwd, Prompt: truncate(c.req.Prompt, maxEventPromptRunes),
+		Kind: KindStop, Stopped: reason, Pings: c.pings,
+	}}
+}
+
+// record appends events without holding the manager lock, then publishes
+// a strictly increasing refresh marker after each successful append.
+func (m *Manager) record(events ...Event) {
+	if m.recorder == nil {
+		return
+	}
+	for _, event := range events {
+		if err := m.recorder.Append(event); err != nil {
+			m.host.Log("warn", "wick: write history: "+err.Error(), nil)
+			continue
+		}
+		m.mu.Lock()
+		now := m.clock.Now().UTC()
+		if !now.After(m.lastEvent) {
+			now = m.lastEvent.Add(time.Nanosecond)
+		}
+		m.lastEvent = now
+		m.mu.Unlock()
+	}
 }
 
 // scheduleLocked sets the next ping at a random delay within the interval
@@ -716,7 +756,7 @@ func (m *Manager) persistLocked() {
 // evictOldestLocked removes the conversation whose last request is the
 // oldest, sparing those with a duration set on the management page unless
 // every conversation has one.
-func (m *Manager) evictOldestLocked() {
+func (m *Manager) evictOldestLocked() []Event {
 	oldest := ""
 	var oldestAt time.Time
 	oldestSet := true
@@ -727,9 +767,12 @@ func (m *Manager) evictOldestLocked() {
 		}
 	}
 	if c, ok := m.convs[oldest]; ok {
+		events := m.stopEventLocked(c, stopEvicted)
 		m.retireLocked(oldest, c)
 		m.logLocked("info", "too many conversations, keep-alive stopped", c.req, c.pings, stopEvicted)
+		return events
 	}
+	return nil
 }
 
 // fire sends one ping. gen guards against a request that arrived after the
@@ -741,11 +784,7 @@ func (m *Manager) fire(key string, gen uint64) {
 	}
 	usage, err := m.ping(req)
 	event := m.finishPing(key, gen, req, n, start, usage, err)
-	if m.recorder != nil {
-		if err := m.recorder.Append(event); err != nil {
-			m.host.Log("warn", "wick: write ping history: "+err.Error(), nil)
-		}
-	}
+	m.record(event)
 }
 
 // beginPing counts the ping and returns the request to replay, or ok=false
@@ -784,9 +823,6 @@ func (m *Manager) finishPing(key string, gen uint64, req request, n int, start t
 		Prompt:  truncate(req.Prompt, maxEventPromptRunes),
 		Ping:    n,
 		Usage:   usage,
-	}
-	if start.After(m.lastEvent) {
-		m.lastEvent = start
 	}
 	current, ok := m.convs[key]
 	stillCurrent := ok && current.gen == gen && !m.stopped
@@ -947,8 +983,8 @@ type ConversationStatus struct {
 type Status struct {
 	Config        config.Config        `json:"config"`
 	Conversations []ConversationStatus `json:"conversations"`
-	// LastEvent is the time of the latest ping or return recorded since the
-	// plugin was loaded.
+	// LastEvent is a strictly increasing refresh marker for successful
+	// history appends since the plugin was loaded, encoded as a timestamp.
 	LastEvent time.Time `json:"last_event"`
 }
 

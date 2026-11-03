@@ -226,6 +226,8 @@ select {
 select:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color) 25%, transparent); }
 .duration-input { width: 88px; padding: 4px 8px; font-family: var(--font-mono); text-align: right; }
 .result-note { margin-left: 8px; font-size: 12px; color: var(--text-secondary); }
+td.net-negative { color: var(--amber-text); }
+th[title] { cursor: help; }
 .totals { margin: -6px 0 12px; font-size: 13px; color: var(--text-secondary); }
 .hint.totals-notes { margin: -8px 0 12px; }
 .totals-notes:empty { display: none; }
@@ -235,6 +237,8 @@ select:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, v
 .cost-success { color: var(--success-badge-text); }
 .cost-warning { color: var(--amber-text); }
 #cost-deltas { color: var(--text-secondary); font-size: 13px; margin: 0; }
+#cost-net { flex-basis: 100%; color: var(--text-secondary); font-size: 13px; margin: 0; }
+#cost-net:empty { display: none; }
 .cost-bars { display: grid; gap: 14px; }
 .cost-row { display: grid; grid-template-columns: 128px minmax(0, 1fr) 74px minmax(200px, 310px); align-items: center; gap: 12px; }
 .cost-label { font-size: 13px; color: var(--text-secondary); }

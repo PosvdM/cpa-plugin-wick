@@ -28,11 +28,14 @@ func TestCompareScopedCountsAndViews(t *testing.T) {
 		ping("pending", -1, 1),
 	}
 	got := Compare(events, Group(events, now, prices), prices)
-	if got.PingCount != 5 || got.Rounds != 4 || got.Failed != 1 || got.Unpriced != 1 || got.Results[ResultSaved] != 1 || got.Results[ResultFailed] != 1 || got.Results[ResultWasted] != 1 || got.Results[ResultPending] != 1 {
+	if got.PingCount != 5 || got.Rounds != 4 || got.Failed != 1 || got.Unpriced != 1 || got.Results[ResultSaved] != 1 || got.Results[ResultFailed] != 1 || got.Results[ResultEnded] != 1 || got.Results[ResultPending] != 1 {
 		t.Fatalf("scope: %+v", got)
 	}
 	if !near(got.Wick, got.Cache+got.Pings) || !near(got.None, got.Cache+got.Saved) || !near(got.Difference, got.Saved-got.Pings) || !near(got.HourDifference, got.Hour-got.Wick) || got.Percent == nil || !near(*got.Percent, got.Difference/got.None*100) {
 		t.Fatalf("views: %+v", got)
+	}
+	if len(got.Costs) != 3 || !near(got.Costs[ResultSaved], 0.02) || !near(got.Costs[ResultFailed], 0.02) || !near(got.Costs[ResultPending], 0.02) {
+		t.Fatalf("costs include rounds outside coverage or without prices: %v", got.Costs)
 	}
 	// A pure ping cost with a zero no-Wick baseline has no percentage.
 	zero := []keepalive.Event{{Time: at(-2), Kind: keepalive.KindRequest, Model: "claude-opus-5-5", Usage: &keepalive.Usage{}}, ping("pending", -1, 1)}
